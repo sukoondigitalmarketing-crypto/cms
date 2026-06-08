@@ -729,6 +729,104 @@ async function initDB() {
     if (!invColNames.includes('hsn_code')) await poolConnection.query("ALTER TABLE inventory ADD COLUMN hsn_code VARCHAR(50) DEFAULT NULL");
     if (!invColNames.includes('description')) await poolConnection.query("ALTER TABLE inventory ADD COLUMN description TEXT DEFAULT NULL");
 
+    // ── Projects table (must be created before any table that references it) ──
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code VARCHAR(50) NOT NULL UNIQUE,
+        name VARCHAR(200) NOT NULL,
+        location VARCHAR(200) NOT NULL,
+        startDate VARCHAR(50) NOT NULL,
+        expectedEndDate VARCHAR(50) NOT NULL,
+        actualEndDate VARCHAR(50) DEFAULT NULL,
+        totalValue DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+        estimatedCost DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+        budget DECIMAL(15,2) DEFAULT 0.00,
+        status VARCHAR(20) NOT NULL DEFAULT 'NEW',
+        is_deleted BOOLEAN DEFAULT FALSE,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    const [projectCols]: any = await poolConnection.query("SHOW COLUMNS FROM projects");
+    const projColNames = projectCols.map((c: any) => c.Field);
+    if (!projColNames.includes('budget')) {
+      await poolConnection.query("ALTER TABLE projects ADD COLUMN budget DECIMAL(15,2) DEFAULT 0");
+    }
+    if (!projColNames.includes('revenue')) {
+      await poolConnection.query("ALTER TABLE projects ADD COLUMN revenue DECIMAL(15,2) DEFAULT 0");
+    }
+
+    // ── GRNs table (must be created before material_issues which references it) ──
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS grns (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        grn_number VARCHAR(50) NOT NULL UNIQUE,
+        projectId INT DEFAULT NULL,
+        vendorName VARCHAR(255) DEFAULT NULL,
+        destination_type ENUM('CENTRAL_STORE', 'DIRECT_PROJECT') DEFAULT 'CENTRAL_STORE',
+        grn_date DATE NOT NULL,
+        total_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+        status VARCHAR(20) DEFAULT 'ACTIVE',
+        remarks TEXT,
+        created_by VARCHAR(255) NOT NULL,
+        cancelled_by VARCHAR(255) DEFAULT NULL,
+        cancellation_reason TEXT DEFAULT NULL,
+        cancelled_at TIMESTAMP NULL DEFAULT NULL,
+        edited_by VARCHAR(255) DEFAULT NULL,
+        edit_reason TEXT DEFAULT NULL,
+        edited_at TIMESTAMP NULL DEFAULT NULL,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE SET NULL
+      )
+    `);
+
+    await poolConnection.query('ALTER TABLE grns MODIFY vendorName VARCHAR(255) NULL');
+
+    // Ensure status, cancelled, edited fields exist (for existing tables)
+    const [grnCols]: any = await poolConnection.query("SHOW COLUMNS FROM grns");
+    const colNames = grnCols.map((c: any) => c.Field);
+    if (!colNames.includes('status')) await poolConnection.query("ALTER TABLE grns ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE'");
+    if (!colNames.includes('cancelled_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancelled_by VARCHAR(255) DEFAULT NULL");
+    if (!colNames.includes('cancellation_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancellation_reason TEXT DEFAULT NULL");
+    if (!colNames.includes('cancelled_at')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancelled_at TIMESTAMP NULL DEFAULT NULL");
+    if (!colNames.includes('edited_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edited_by VARCHAR(255) DEFAULT NULL");
+    if (!colNames.includes('edit_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edit_reason TEXT DEFAULT NULL");
+    if (!colNames.includes('edited_at')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edited_at TIMESTAMP NULL DEFAULT NULL");
+    if (!colNames.includes('gstNumber')) await poolConnection.query("ALTER TABLE grns ADD COLUMN gstNumber VARCHAR(50) DEFAULT NULL");
+    if (!colNames.includes('discountType')) await poolConnection.query("ALTER TABLE grns ADD COLUMN discountType VARCHAR(20) DEFAULT NULL");
+    if (!colNames.includes('discountValue')) await poolConnection.query("ALTER TABLE grns ADD COLUMN discountValue DECIMAL(10,2) DEFAULT NULL");
+    if (!colNames.includes('finalAmount')) await poolConnection.query("ALTER TABLE grns ADD COLUMN finalAmount DECIMAL(12,2) DEFAULT NULL");
+    if (!colNames.includes('transportCharges')) await poolConnection.query("ALTER TABLE grns ADD COLUMN transportCharges DECIMAL(10,2) DEFAULT 0.00");
+    if (!colNames.includes('otherCharges')) await poolConnection.query("ALTER TABLE grns ADD COLUMN otherCharges DECIMAL(10,2) DEFAULT 0.00");
+    if (!colNames.includes('destination_type')) await poolConnection.query("ALTER TABLE grns ADD COLUMN destination_type ENUM('CENTRAL_STORE', 'DIRECT_PROJECT') DEFAULT 'CENTRAL_STORE' AFTER vendorName");
+    if (!colNames.includes('po_id')) {
+      await poolConnection.query("ALTER TABLE grns ADD COLUMN po_id INT DEFAULT NULL AFTER grn_number");
+      // FK to purchase_orders is added later (after purchase_orders table is created)
+    }
+    if (!colNames.includes('is_emergency')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_emergency BOOLEAN DEFAULT FALSE");
+    if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
+
+    // GRN Items table
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS grn_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        grn_id INT NOT NULL,
+        inventory_id INT NOT NULL,
+        item_name VARCHAR(255) NOT NULL,
+        quantity DECIMAL(10,2) NOT NULL,
+        rate DECIMAL(18,6) NOT NULL,
+        total DECIMAL(15,2) NOT NULL,
+        FOREIGN KEY (grn_id) REFERENCES grns(id) ON DELETE CASCADE,
+        FOREIGN KEY (inventory_id) REFERENCES inventory(id)
+      )
+    `);
+
+    // Ensure high precision for grn_items rate
+    await poolConnection.query("ALTER TABLE grn_items MODIFY COLUMN rate DECIMAL(18,6) NOT NULL");
+
     // Material Issues table
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS material_issues (
@@ -959,26 +1057,6 @@ async function initDB() {
       )
     `);
 
-    // Projects table
-    await poolConnection.query(`
-      CREATE TABLE IF NOT EXISTS projects (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        code VARCHAR(50) NOT NULL UNIQUE,
-        name VARCHAR(200) NOT NULL,
-        location VARCHAR(200) NOT NULL,
-        startDate VARCHAR(50) NOT NULL,
-        expectedEndDate VARCHAR(50) NOT NULL,
-        actualEndDate VARCHAR(50) DEFAULT NULL,
-        totalValue DECIMAL(15,2) NOT NULL DEFAULT 0.00,
-        estimatedCost DECIMAL(15,2) NOT NULL DEFAULT 0.00,
-        budget DECIMAL(15,2) DEFAULT 0.00,
-        status VARCHAR(20) NOT NULL DEFAULT 'NEW',
-        is_deleted BOOLEAN DEFAULT FALSE,
-        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
-
     // 🛡️ Ensure Performance Indexes
 
     await addIndexSafe("CREATE INDEX idx_inv_add_date ON inventory_additions(addition_date)");
@@ -986,15 +1064,6 @@ async function initDB() {
     await addIndexSafe("CREATE INDEX idx_mat_issue_date ON material_issues(issue_date)");
     await addIndexSafe("CREATE INDEX idx_mat_issue_item ON material_issues(item_name)");
     await addIndexSafe("CREATE INDEX idx_mat_issue_proj ON material_issues(project_name)");
-
-    const [projectCols]: any = await poolConnection.query("SHOW COLUMNS FROM projects");
-    const projColNames = projectCols.map((c: any) => c.Field);
-    if (!projColNames.includes('budget')) {
-      await poolConnection.query("ALTER TABLE projects ADD COLUMN budget DECIMAL(15,2) DEFAULT 0");
-    }
-    if (!projColNames.includes('revenue')) {
-      await poolConnection.query("ALTER TABLE projects ADD COLUMN revenue DECIMAL(15,2) DEFAULT 0");
-    }
 
     // Approvals table
     await poolConnection.query(`
@@ -1063,77 +1132,6 @@ async function initDB() {
         FOREIGN KEY (customerId) REFERENCES customers(id) ON DELETE CASCADE
       )
     `);
-
-    // GRNs table
-    await poolConnection.query(`
-      CREATE TABLE IF NOT EXISTS grns (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        grn_number VARCHAR(50) NOT NULL UNIQUE,
-        projectId INT DEFAULT NULL,
-        vendorName VARCHAR(255) DEFAULT NULL,
-        destination_type ENUM('CENTRAL_STORE', 'DIRECT_PROJECT') DEFAULT 'CENTRAL_STORE',
-        grn_date DATE NOT NULL,
-        total_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00,
-        status VARCHAR(20) DEFAULT 'ACTIVE',
-        remarks TEXT,
-        created_by VARCHAR(255) NOT NULL,
-        cancelled_by VARCHAR(255) DEFAULT NULL,
-        cancellation_reason TEXT DEFAULT NULL,
-        cancelled_at TIMESTAMP NULL DEFAULT NULL,
-        edited_by VARCHAR(255) DEFAULT NULL,
-        edit_reason TEXT DEFAULT NULL,
-        edited_at TIMESTAMP NULL DEFAULT NULL,
-        is_deleted BOOLEAN DEFAULT FALSE,
-        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE SET NULL
-      )
-    `);
-
-    await poolConnection.query('ALTER TABLE grns MODIFY vendorName VARCHAR(255) NULL');
-
-    // Ensure status, cancelled, edited fields exist (for existing tables)
-    const [grnCols]: any = await poolConnection.query("SHOW COLUMNS FROM grns");
-    const colNames = grnCols.map((c: any) => c.Field);
-    if (!colNames.includes('status')) await poolConnection.query("ALTER TABLE grns ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE'");
-    if (!colNames.includes('cancelled_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancelled_by VARCHAR(255) DEFAULT NULL");
-    if (!colNames.includes('cancellation_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancellation_reason TEXT DEFAULT NULL");
-    if (!colNames.includes('cancelled_at')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancelled_at TIMESTAMP NULL DEFAULT NULL");
-    if (!colNames.includes('edited_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edited_by VARCHAR(255) DEFAULT NULL");
-    if (!colNames.includes('edit_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edit_reason TEXT DEFAULT NULL");
-    if (!colNames.includes('edited_at')) await poolConnection.query("ALTER TABLE grns ADD COLUMN edited_at TIMESTAMP NULL DEFAULT NULL");
-    if (!colNames.includes('gstNumber')) await poolConnection.query("ALTER TABLE grns ADD COLUMN gstNumber VARCHAR(50) DEFAULT NULL");
-    if (!colNames.includes('discountType')) await poolConnection.query("ALTER TABLE grns ADD COLUMN discountType VARCHAR(20) DEFAULT NULL");
-    if (!colNames.includes('discountValue')) await poolConnection.query("ALTER TABLE grns ADD COLUMN discountValue DECIMAL(10,2) DEFAULT NULL");
-    if (!colNames.includes('finalAmount')) await poolConnection.query("ALTER TABLE grns ADD COLUMN finalAmount DECIMAL(12,2) DEFAULT NULL");
-    if (!colNames.includes('transportCharges')) await poolConnection.query("ALTER TABLE grns ADD COLUMN transportCharges DECIMAL(10,2) DEFAULT 0.00");
-    if (!colNames.includes('otherCharges')) await poolConnection.query("ALTER TABLE grns ADD COLUMN otherCharges DECIMAL(10,2) DEFAULT 0.00");
-    if (!colNames.includes('destination_type')) await poolConnection.query("ALTER TABLE grns ADD COLUMN destination_type ENUM('CENTRAL_STORE', 'DIRECT_PROJECT') DEFAULT 'CENTRAL_STORE' AFTER vendorName");
-    if (!colNames.includes('po_id')) {
-      await poolConnection.query("ALTER TABLE grns ADD COLUMN po_id INT DEFAULT NULL AFTER grn_number");
-      try {
-        await poolConnection.query("ALTER TABLE grns ADD FOREIGN KEY (po_id) REFERENCES purchase_orders(id) ON DELETE SET NULL");
-      } catch (e) {}
-    }
-    if (!colNames.includes('is_emergency')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_emergency BOOLEAN DEFAULT FALSE");
-    if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
-
-    // GRN Items table
-    await poolConnection.query(`
-      CREATE TABLE IF NOT EXISTS grn_items (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        grn_id INT NOT NULL,
-        inventory_id INT NOT NULL,
-        item_name VARCHAR(255) NOT NULL,
-        quantity DECIMAL(10,2) NOT NULL,
-        rate DECIMAL(18,6) NOT NULL,
-        total DECIMAL(15,2) NOT NULL,
-        FOREIGN KEY (grn_id) REFERENCES grns(id) ON DELETE CASCADE,
-        FOREIGN KEY (inventory_id) REFERENCES inventory(id)
-      )
-    `);
-    
-    // Ensure high precision for grn_items rate
-    await poolConnection.query("ALTER TABLE grn_items MODIFY COLUMN rate DECIMAL(18,6) NOT NULL");
 
     // Contractor Payments table
     await poolConnection.query(`
@@ -1764,7 +1762,27 @@ async function initDB() {
     `);
 
     if (!poColNames.includes('version')) await poolConnection.query("ALTER TABLE purchase_orders ADD COLUMN version INT DEFAULT 1 AFTER po_status");
-    
+
+    // Deferred FK: grns.po_id -> purchase_orders (purchase_orders now exists)
+    try {
+      const [grnPoFkRows]: any = await poolConnection.query(`
+        SELECT CONSTRAINT_NAME
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'grns'
+          AND COLUMN_NAME = 'po_id'
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `);
+      if (grnPoFkRows.length === 0) {
+        const [grnPoColCheck]: any = await poolConnection.query("SHOW COLUMNS FROM grns WHERE Field = 'po_id'");
+        if (grnPoColCheck.length > 0) {
+          await poolConnection.query("ALTER TABLE grns ADD FOREIGN KEY (po_id) REFERENCES purchase_orders(id) ON DELETE SET NULL");
+        }
+      }
+    } catch (e: any) {
+      console.warn('[INIT] Could not add deferred FK grns.po_id -> purchase_orders:', e.message);
+    }
+
     // Fix existing procurement_items with NULL received_quantity
     await poolConnection.query("UPDATE procurement_items SET received_quantity = 0 WHERE received_quantity IS NULL");
 
