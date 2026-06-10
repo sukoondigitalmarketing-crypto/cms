@@ -1147,8 +1147,11 @@ async function initDB() {
     await poolConnection.query('ALTER TABLE grns MODIFY vendorName VARCHAR(255) NULL');
 
     // Ensure status, cancelled, edited fields exist (for existing tables)
+    console.log("=== GRN TABLE SCHEMA ===");
     const [grnCols]: any = await poolConnection.query("SHOW COLUMNS FROM grns");
+    console.log(grnCols);
     const colNames = grnCols.map((c: any) => c.Field);
+    if (!colNames.includes('total_amount')) await poolConnection.query("ALTER TABLE grns ADD COLUMN total_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00");
     if (!colNames.includes('status')) await poolConnection.query("ALTER TABLE grns ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE'");
     if (!colNames.includes('cancelled_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancelled_by VARCHAR(255) DEFAULT NULL");
     if (!colNames.includes('cancellation_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN cancellation_reason TEXT DEFAULT NULL");
