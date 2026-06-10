@@ -1,0 +1,59 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "src",
+    "server.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "scratch",
+    "src/App_new.tsx",
+    "src/App_old_with_firebase.tsx.bak",
+    "add_sample_projects.ts",
+    "check_approvals.ts",
+    "check_data.ts",
+    "check_db.ts",
+    "check_firestore_projects.ts",
+    "check_hashes.ts",
+    "check_projects.ts",
+    "check_sql_projects.ts",
+    "check_users.ts",
+    "count_inventory.ts",
+    "count_inventory_status.ts",
+    "create_projects_table.ts",
+    "list_dbs.ts",
+    "migrate_projects_to_sql.ts",
+    "test_hashes.ts",
+    "test_hashes_roles.ts"
+  ]
+}
