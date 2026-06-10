@@ -1249,6 +1249,12 @@ async function initDB() {
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+    
+    const [vendorCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendors");
+    const vendorColNames = vendorCols.map((c: any) => c.Field);
+    if (!vendorColNames.includes('phone')) {
+      await poolConnection.query("ALTER TABLE vendors ADD COLUMN phone VARCHAR(50)");
+    }
 
     // Ensure Placeholder Vendor exists for Draft POs
     const [placeholderVendorRows]: any = await poolConnection.query(
