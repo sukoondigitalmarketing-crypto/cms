@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import net from 'net';
 
@@ -20,7 +21,7 @@ const server = express();
 // CORS Configuration
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',') 
-  : ['http://localhost:3000', 'http://localhost:5173'];
+  : ['http://localhost:3000', 'http://localhost:5173', 'https://cms-3gdl.onrender.com'];
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
@@ -7123,12 +7124,35 @@ api.use((req, res) => {
   res.status(404).json({ error: 'API route not found' });
 });
 
+// Log asset requests
+server.use((req, res, next) => {
+  if (req.url.includes("/assets/")) {
+    console.log("ASSET REQUEST:", req.url);
+  }
+  next();
+});
+
+// === Diagnostics: Check build files
+console.log("=== DIST CHECK ===");
+const distPathFromDirname = path.join(__dirname, 'dist');
+const distPathFromCwd = path.join(process.cwd(), 'dist');
+const distPath = fs.existsSync(distPathFromDirname) ? distPathFromDirname : distPathFromCwd;
+console.log("DIST PATH FROM DIRNAME:", distPathFromDirname);
+console.log("DIST PATH FROM CWD:", distPathFromCwd);
+console.log("USING DIST PATH:", distPath);
+console.log("DIST EXISTS:", fs.existsSync(distPath));
+const assetsPath = path.join(distPath, 'assets');
+console.log("ASSETS PATH:", assetsPath);
+console.log("ASSETS EXISTS:", fs.existsSync(assetsPath));
+const indexHtmlPath = path.join(distPath, 'index.html');
+console.log("INDEX.HTML EXISTS:", fs.existsSync(indexHtmlPath));
+
 // Serve static files from the React frontend build
-server.use(express.static(path.join(__dirname, 'dist')));
+server.use(express.static(distPath));
 
 // Fallback for React Router
 server.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 async function startServer() {
