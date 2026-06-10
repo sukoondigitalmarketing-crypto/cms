@@ -632,6 +632,17 @@ async function initDB() {
 
     poolConnection = await pool.getConnection();
 
+    // === LOG SCHEMA FOR TABLES WITH POSSIBLE PHONE COLUMNS
+    console.log("=== SCHEMA: vendors");
+    const [vendorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendors");
+    console.log(vendorsCols);
+    console.log("=== SCHEMA: customers");
+    const [customersCols]: any = await poolConnection.query("SHOW COLUMNS FROM customers");
+    console.log(customersCols);
+    console.log("=== SCHEMA: contractors");
+    const [contractorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM contractors");
+    console.log(contractorsCols);
+
     // Helper for safe index addition
     const addIndexSafe = async (query: string) => {
       try {
@@ -1257,15 +1268,18 @@ async function initDB() {
     }
 
     // Ensure Placeholder Vendor exists for Draft POs
+    console.log("PHONE SQL: SELECT * FROM vendors WHERE vendor_name = 'PLACEHOLDER VENDOR'");
     const [placeholderVendorRows]: any = await poolConnection.query(
       "SELECT * FROM vendors WHERE vendor_name = 'PLACEHOLDER VENDOR'"
     );
     if (placeholderVendorRows.length === 0) {
       console.log('🌱 Seeding Placeholder Vendor for Draft POs...');
-      await poolConnection.query(`
+      const placeholderVendorSQL = `
         INSERT INTO vendors (vendor_name, contact_person, phone, address, gst_number) 
         VALUES ('PLACEHOLDER VENDOR', 'TBD', 'TBD', 'TBD', 'TBD')
-      `);
+      `;
+      console.log("PHONE SQL:", placeholderVendorSQL);
+      await poolConnection.query(placeholderVendorSQL);
     }
 
     // Categories table
@@ -2122,7 +2136,9 @@ api.delete('/master/projects/:id', authorizeAction('masters', 'delete'), async (
 
 api.get('/master/vendors', authorizeAction('masters', 'view'), async (req, res) => {
   try {
-    const [vendors] = await pool.execute('SELECT * FROM vendors WHERE is_deleted = FALSE ORDER BY vendor_name ASC');
+    const vendorSelectSQL = 'SELECT * FROM vendors WHERE is_deleted = FALSE ORDER BY vendor_name ASC';
+    console.log("PHONE SQL:", vendorSelectSQL);
+    const [vendors] = await pool.execute(vendorSelectSQL);
     const vendorIds = (vendors as any[]).map(v => v.id);
     let vendorCategories: any[] = [];
     if (vendorIds.length > 0) {
@@ -2156,8 +2172,10 @@ api.post('/master/vendors', authorizeAction('masters', 'create'), async (req, re
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+    const vendorInsertSQL = 'INSERT INTO vendors (vendor_name, contact_person, phone, address, gst_number) VALUES (?, ?, ?, ?, ?)';
+    console.log("PHONE SQL:", vendorInsertSQL);
     const [result]: any = await connection.execute(
-      'INSERT INTO vendors (vendor_name, contact_person, phone, address, gst_number) VALUES (?, ?, ?, ?, ?)',
+      vendorInsertSQL,
       [vendor_name, contact_person, phone, address, gst_number]
     );
     const vendorId = result.insertId;
@@ -2185,8 +2203,10 @@ api.put('/master/vendors/:id', authorizeAction('masters', 'edit'), async (req, r
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+    const vendorUpdateSQL = 'UPDATE vendors SET vendor_name=?, contact_person=?, phone=?, address=?, gst_number=? WHERE id=?';
+    console.log("PHONE SQL:", vendorUpdateSQL);
     await connection.execute(
-      'UPDATE vendors SET vendor_name=?, contact_person=?, phone=?, address=?, gst_number=? WHERE id=?',
+      vendorUpdateSQL,
       [vendor_name, contact_person, phone, address, gst_number, id]
     );
     await connection.execute('DELETE FROM vendor_categories WHERE vendor_id = ?', [id]);
