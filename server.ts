@@ -1304,6 +1304,7 @@ async function initDB() {
     if (!catColNames.includes('is_deleted')) {
       await poolConnection.query("ALTER TABLE categories ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE");
     }
+    console.log('📊 Categories table schema after migration:', catColNames);
 
     // Units table
     await poolConnection.query(`
@@ -1320,6 +1321,7 @@ async function initDB() {
     if (!unitColNames.includes('is_deleted')) {
       await poolConnection.query("ALTER TABLE units ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE");
     }
+    console.log('📊 Units table schema after migration:', unitColNames);
 
     // Vendor Categories Mapping Table
     await poolConnection.query(`
