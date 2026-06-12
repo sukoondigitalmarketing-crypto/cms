@@ -1299,6 +1299,12 @@ async function initDB() {
       )
     `);
 
+    const [catCols]: any = await poolConnection.query("SHOW COLUMNS FROM categories");
+    const catColNames = catCols.map((c: any) => c.Field);
+    if (!catColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE categories ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE");
+    }
+
     // Units table
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS units (
@@ -1308,6 +1314,12 @@ async function initDB() {
         createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    const [unitCols]: any = await poolConnection.query("SHOW COLUMNS FROM units");
+    const unitColNames = unitCols.map((c: any) => c.Field);
+    if (!unitColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE units ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE");
+    }
 
     // Vendor Categories Mapping Table
     await poolConnection.query(`
