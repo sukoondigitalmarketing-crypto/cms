@@ -5720,10 +5720,11 @@ api.put('/procurement/pr/:id/status', authorizeAction('procurement', 'approve'),
 
       // 6. Save DRAFT PO line items
       for (const item of prItems) {
+        const finalInventoryId = item.inventory_id ? Number(item.inventory_id) : null;
         await connection.execute(
           `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, approved_rate, gst_percent, tax_amount, total_amount, remarks)
            VALUES ('PO', ?, ?, ?, ?, ?, 18.00, ?, ?, ?)`,
-          [poId, item.inventory_id, item.item_name, item.quantity, 0, 0, 0, item.remarks || '']
+          [poId, finalInventoryId, item.item_name, item.quantity, 0, 0, 0, item.remarks || '']
         );
       }
 
