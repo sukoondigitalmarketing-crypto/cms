@@ -1766,7 +1766,7 @@ async function initDB() {
         id INT AUTO_INCREMENT PRIMARY KEY,
         parent_type ENUM('PR', 'PO', 'WO') NOT NULL,
         parent_id INT NOT NULL,
-        inventory_id INT NOT NULL,
+        inventory_id INT DEFAULT NULL,
         item_name VARCHAR(255) NOT NULL,
         quantity DECIMAL(15,2) NOT NULL,
         received_quantity DECIMAL(15,2) DEFAULT 0.00,
@@ -1776,9 +1776,39 @@ async function initDB() {
         tax_amount DECIMAL(15,2) DEFAULT 0.00,
         total_amount DECIMAL(15,2) DEFAULT 0.00,
         remarks TEXT,
-        FOREIGN KEY (inventory_id) REFERENCES inventory(id)
+        FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE SET NULL
       )
     `);
+    
+    // Make inventory_id in procurement_items nullable (for quick register)
+    const [itemCols]: any = await poolConnection.query("SHOW COLUMNS FROM procurement_items");
+    const itemColNames = itemCols.map((c: any) => c.Field);
+    if (itemColNames.includes('inventory_id')) {
+      const [invCol]: any = await poolConnection.query("SHOW COLUMNS FROM procurement_items WHERE Field = 'inventory_id'");
+      if (invCol[0].Null === 'NO') {
+        console.log('🔄 Making procurement_items.inventory_id nullable');
+        try {
+          // Drop foreign key first if it exists
+          const [fkRows]: any = await poolConnection.query(`
+            SELECT CONSTRAINT_NAME 
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = 'procurement_items' 
+              AND COLUMN_NAME = 'inventory_id' 
+              AND REFERENCED_TABLE_NAME IS NOT NULL
+          `);
+          if (fkRows.length > 0) {
+            await poolConnection.query(`ALTER TABLE procurement_items DROP FOREIGN KEY ${fkRows[0].CONSTRAINT_NAME}`);
+          }
+          // Modify column to nullable
+          await poolConnection.query("ALTER TABLE procurement_items MODIFY COLUMN inventory_id INT DEFAULT NULL");
+          // Re-add foreign key with ON DELETE SET NULL
+          await poolConnection.query("ALTER TABLE procurement_items ADD FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE SET NULL");
+        } catch (e) {
+          console.warn('⚠️ Could not modify inventory_id foreign key, continuing:', e);
+        }
+      }
+    }
 
     // 3. Purchase Orders
     await poolConnection.query(`
@@ -5448,6 +5478,8 @@ api.post('/procurement/pr', authorizeAction('procurement', 'create'), async (req
   const user = (req as any).user as Session;
   const { project_id, procurement_type, request_reason, priority, items } = req.body;
 
+  console.log('📝 POST /procurement/pr - Request body:', req.body);
+
   const finalProcurementType = procurement_type || 'PROJECT';
   const finalProjectId = finalProcurementType === 'GENERAL_STOCK' ? null : project_id;
 
@@ -5464,19 +5496,25 @@ api.post('/procurement/pr', authorizeAction('procurement', 'create'), async (req
     await connection.beginTransaction();
 
     const prNumber = `PR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const [prResult]: any = await connection.execute(
-      `INSERT INTO purchase_requests (pr_number, project_id, procurement_type, requested_by, requested_by_uid, request_reason, priority, status, estimated_total)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [prNumber, finalProjectId, finalProcurementType, user.name || user.email, user.uid, request_reason || '', priority || 'MEDIUM', PR_STATUS.DRAFT, 0]
-    );
+    const prInsertSQL = `INSERT INTO purchase_requests (pr_number, project_id, procurement_type, requested_by, requested_by_uid, request_reason, priority, status, estimated_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const prInsertParams = [prNumber, finalProjectId, finalProcurementType, user.name || user.email, user.uid, request_reason || '', priority || 'MEDIUM', PR_STATUS.DRAFT, 0];
+    
+    console.log('🔧 PR Insert SQL:', prInsertSQL);
+    console.log('🔧 PR Insert Params:', prInsertParams);
+    
+    const [prResult]: any = await connection.execute(prInsertSQL, prInsertParams);
     const prId = prResult.insertId;
+    console.log('✅ PR created with ID:', prId);
 
     for (const item of items) {
-      await connection.execute(
-        `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, estimated_rate, remarks)
-         VALUES ('PR', ?, ?, ?, ?, ?, ?)`,
-        [prId, item.inventory_id, item.item_name, item.quantity, 0, item.remarks || '']
-      );
+      const finalInventoryId = item.inventory_id ? Number(item.inventory_id) : null;
+      const itemInsertSQL = `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, estimated_rate, remarks) VALUES ('PR', ?, ?, ?, ?, ?, ?)`;
+      const itemInsertParams = [prId, finalInventoryId, item.item_name, item.quantity, 0, item.remarks || ''];
+      
+      console.log('🔧 Procurement Item Insert SQL:', itemInsertSQL);
+      console.log('🔧 Procurement Item Insert Params:', itemInsertParams);
+      
+      await connection.execute(itemInsertSQL, itemInsertParams);
     }
 
     await logProcurementAction(connection, 'PR', prId, 'CREATED_DRAFT', user, 'PR created as draft');
@@ -5485,6 +5523,8 @@ api.post('/procurement/pr', authorizeAction('procurement', 'create'), async (req
     await connection.commit();
     res.status(201).json({ id: prId, pr_number: prNumber, message: 'PR draft created successfully' });
   } catch (error: any) {
+    console.error('❌ POST /procurement/pr - Error:', error);
+    console.error('❌ POST /procurement/pr - Stack:', error.stack);
     await connection.rollback();
     res.status(500).json({ error: error.message });
   } finally {
@@ -5526,10 +5566,11 @@ api.put('/procurement/pr/:id', authorizeAction('procurement', 'edit'), async (re
 
     await connection.execute(`DELETE FROM procurement_items WHERE parent_type = 'PR' AND parent_id = ?`, [id]);
     for (const item of items) {
+      const finalInventoryId = item.inventory_id ? Number(item.inventory_id) : null;
       await connection.execute(
         `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, estimated_rate, remarks)
          VALUES ('PR', ?, ?, ?, ?, ?, ?)`,
-        [id, item.inventory_id, item.item_name, item.quantity, 0, item.remarks || '']
+        [id, finalInventoryId, item.item_name, item.quantity, 0, item.remarks || '']
       );
     }
 
