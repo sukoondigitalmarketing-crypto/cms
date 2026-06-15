@@ -1103,6 +1103,21 @@ async function initDB() {
       )
     `);
 
+    // Ensure paymentReceived and pendingPayment exist on existing customers tables
+    console.log("=== CUSTOMERS TABLE SCHEMA ===");
+    const [customerCols]: any = await poolConnection.query("SHOW COLUMNS FROM customers");
+    console.log(customerCols);
+    const customerColNames = customerCols.map((c: any) => c.Field);
+    if (!customerColNames.includes('totalPayment')) {
+      await poolConnection.query("ALTER TABLE customers ADD COLUMN totalPayment DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+    }
+    if (!customerColNames.includes('paymentReceived')) {
+      await poolConnection.query("ALTER TABLE customers ADD COLUMN paymentReceived DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+    }
+    if (!customerColNames.includes('pendingPayment')) {
+      await poolConnection.query("ALTER TABLE customers ADD COLUMN pendingPayment DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+    }
+
     // Ledger Entries table
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS ledger_entries (
