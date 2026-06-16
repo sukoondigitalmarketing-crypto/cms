@@ -1127,7 +1127,7 @@ async function initDB() {
       )
     `);
 
-    // Ensure paymentReceived and pendingPayment exist on existing customers tables
+    // Ensure paymentReceived, pendingPayment, totalPayment, and is_deleted exist on existing customers tables
     console.log("=== CUSTOMERS TABLE SCHEMA ===");
     const [customerCols]: any = await poolConnection.query("SHOW COLUMNS FROM customers");
     console.log(customerCols);
@@ -1140,6 +1140,9 @@ async function initDB() {
     }
     if (!customerColNames.includes('pendingPayment')) {
       await poolConnection.query("ALTER TABLE customers ADD COLUMN pendingPayment DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+    }
+    if (!customerColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE customers ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
     }
 
     // Ledger Entries table
@@ -1158,6 +1161,15 @@ async function initDB() {
         FOREIGN KEY (customerId) REFERENCES customers(id) ON DELETE CASCADE
       )
     `);
+
+    // Ensure is_deleted exists on existing ledger_entries tables
+    console.log("=== LEDGER ENTRIES TABLE SCHEMA ===");
+    const [ledgerCols]: any = await poolConnection.query("SHOW COLUMNS FROM ledger_entries");
+    console.log(ledgerCols);
+    const ledgerColNames = ledgerCols.map((c: any) => c.Field);
+    if (!ledgerColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE ledger_entries ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
+    }
 
     // GRNs table
     await poolConnection.query(`
