@@ -901,12 +901,36 @@ async function initDB() {
       )
     `);
 
+    // Ensure material_issue_vouchers has is_deleted column
+    console.log("=== MATERIAL ISSUE VOUCHERS TABLE SCHEMA ===");
+    const [mivCols]: any = await poolConnection.query("SHOW COLUMNS FROM material_issue_vouchers");
+    console.log(mivCols);
+    const mivColNames = mivCols.map((c: any) => c.Field);
+    if (!mivColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
+    }
+    if (!mivColNames.includes('status')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN status ENUM('ACTIVE', 'PARTIALLY_REVERTED', 'FULLY_REVERTED', 'VOID') DEFAULT 'ACTIVE'");
+    }
+
     // 🛡️ Performance Indexes for Voucher System
     await addIndexSafe("CREATE INDEX idx_miv_no ON material_issue_vouchers(voucher_no)");
     await addIndexSafe("CREATE INDEX idx_miv_date ON material_issue_vouchers(issue_date)");
     await addIndexSafe("CREATE INDEX idx_miv_proj ON material_issue_vouchers(project_id)");
     await addIndexSafe("CREATE INDEX idx_mii_voucher ON material_issue_items(voucher_id)");
     await addIndexSafe("CREATE INDEX idx_mii_inv ON material_issue_items(inventory_id)");
+
+    // Ensure material_issue_items has is_deleted column
+    console.log("=== MATERIAL ISSUE ITEMS TABLE SCHEMA ===");
+    const [miiCols]: any = await poolConnection.query("SHOW COLUMNS FROM material_issue_items");
+    console.log(miiCols);
+    const miiColNames = miiCols.map((c: any) => c.Field);
+    if (!miiColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
+    }
+    if (!miiColNames.includes('revert_status')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN revert_status ENUM('ACTIVE', 'REVERTED') DEFAULT 'ACTIVE'");
+    }
 
     // 🔄 Legacy Migration Block
     const [existingVouchers]: any = await poolConnection.query('SELECT COUNT(*) as count FROM material_issue_vouchers');
