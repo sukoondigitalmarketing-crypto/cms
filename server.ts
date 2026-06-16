@@ -1075,6 +1075,9 @@ async function initDB() {
     if (!projColNames.includes('revenue')) {
       await poolConnection.query("ALTER TABLE projects ADD COLUMN revenue DECIMAL(15,2) DEFAULT 0");
     }
+    if (!projColNames.includes('is_deleted')) {
+      await poolConnection.query("ALTER TABLE projects ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
+    }
 
     // Approvals table
     await poolConnection.query(`
