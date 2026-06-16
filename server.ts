@@ -37,7 +37,7 @@ const corsOptions = {
 
 server.use(cors(corsOptions));
 server.use(express.json());
-const PORT = parseInt(process.env.PORT || '3001', 10);
+const PORT = parseInt(process.env.PORT || '10000', 10);
 const api = express.Router();
 
 const ROLES = {
@@ -2405,7 +2405,7 @@ api.get('/', (req, res) => {
   res.send(`
     <div style="font-family: sans-serif; padding: 40px; text-align: center;">
       <h1 style="color: #2563eb;">BuildCore CMS API Server</h1>
-      <p style="color: #4b5563;">The backend API server is running successfully on port 3001.</p>
+      <p style="color: #4b5563;">The backend API server is running successfully on port ${PORT}.</p>
       <div style="margin-top: 20px; padding: 20px; background: #f3f4f6; border-radius: 8px; display: inline-block;">
         <p style="margin: 0; font-weight: bold;">To view the application, please open the frontend URL:</p>
         <code style="display: block; margin-top: 10px; font-size: 1.2em; color: #059669;">http://localhost:5173</code>
