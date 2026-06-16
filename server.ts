@@ -1863,6 +1863,24 @@ async function initDB() {
         }
       }
     }
+    if (!itemColNames.includes('received_quantity')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN received_quantity DECIMAL(15,2) DEFAULT 0.00");
+    }
+    if (!itemColNames.includes('estimated_rate')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN estimated_rate DECIMAL(18,6) DEFAULT 0.00");
+    }
+    if (!itemColNames.includes('approved_rate')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN approved_rate DECIMAL(18,6) DEFAULT 0.00");
+    }
+    if (!itemColNames.includes('gst_percent')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN gst_percent DECIMAL(5,2) DEFAULT 0.00");
+    }
+    if (!itemColNames.includes('tax_amount')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN tax_amount DECIMAL(15,2) DEFAULT 0.00");
+    }
+    if (!itemColNames.includes('total_amount')) {
+      await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN total_amount DECIMAL(15,2) DEFAULT 0.00");
+    }
 
     // 3. Purchase Orders
     await poolConnection.query(`
