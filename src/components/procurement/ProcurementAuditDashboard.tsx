@@ -82,7 +82,7 @@ export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardPro
                     </div>
                     <div>
                       <p className="text-xs font-black text-slate-400 uppercase tracking-wider">Governance Remarks</p>
-                      <p className="text-sm text-slate-600 italic">"{log.action_details || 'No remarks provided.'}"</p>
+                      <p className="text-sm text-slate-600 italic">"{typeof log.action_details === 'string' ? log.action_details : log.action_details?.message || 'No remarks provided.'}"</p>
                     </div>
                   </div>
                 </div>

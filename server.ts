@@ -5479,7 +5479,7 @@ async function logProcurementAction(connection: mysql.PoolConnection | mysql.Poo
   await connection.execute(
     `INSERT INTO procurement_audit_logs (document_type, document_id, action_type, actor_name, actor_role, action_details)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [entityType, entityId, action, user.name || user.email, user.role, remarks || '']
+    [entityType, entityId, action, user.name || user.email, user.role, JSON.stringify({ message: remarks || '' })]
   );
 }
 
