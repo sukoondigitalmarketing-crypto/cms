@@ -1881,6 +1881,14 @@ async function initDB() {
     if (!itemColNames.includes('total_amount')) {
       await poolConnection.query("ALTER TABLE procurement_items ADD COLUMN total_amount DECIMAL(15,2) DEFAULT 0.00");
     }
+    if (itemColNames.includes('unit_rate')) {
+      console.log('🔧 Found legacy unit_rate column, setting default 0');
+      try {
+        await poolConnection.query("ALTER TABLE procurement_items MODIFY COLUMN unit_rate DECIMAL(18,6) DEFAULT 0.00");
+      } catch (e) {
+        console.warn('⚠️ Could not modify unit_rate column, continuing:', e);
+      }
+    }
 
     // 3. Purchase Orders
     await poolConnection.query(`
@@ -5580,8 +5588,8 @@ api.post('/procurement/pr', authorizeAction('procurement', 'create'), async (req
 
     for (const item of items) {
       const finalInventoryId = item.inventory_id ? Number(item.inventory_id) : null;
-      const itemInsertSQL = `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, estimated_rate, remarks) VALUES ('PR', ?, ?, ?, ?, ?, ?)`;
-      const itemInsertParams = [prId, finalInventoryId, item.item_name, item.quantity, 0, item.remarks || ''];
+      const itemInsertSQL = `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, received_quantity, estimated_rate, approved_rate, gst_percent, tax_amount, total_amount, remarks) VALUES ('PR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      const itemInsertParams = [prId, finalInventoryId, item.item_name, item.quantity, 0, 0, 0, 0, 0, 0, item.remarks || ''];
       
       console.log('🔧 Procurement Item Insert SQL:', itemInsertSQL);
       console.log('🔧 Procurement Item Insert Params:', itemInsertParams);
@@ -5640,9 +5648,9 @@ api.put('/procurement/pr/:id', authorizeAction('procurement', 'edit'), async (re
     for (const item of items) {
       const finalInventoryId = item.inventory_id ? Number(item.inventory_id) : null;
       await connection.execute(
-        `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, estimated_rate, remarks)
-         VALUES ('PR', ?, ?, ?, ?, ?, ?)`,
-        [id, finalInventoryId, item.item_name, item.quantity, 0, item.remarks || '']
+        `INSERT INTO procurement_items (parent_type, parent_id, inventory_id, item_name, quantity, received_quantity, estimated_rate, approved_rate, gst_percent, tax_amount, total_amount, remarks)
+         VALUES ('PR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, finalInventoryId, item.item_name, item.quantity, 0, 0, 0, 0, 0, 0, item.remarks || '']
       );
     }
 
