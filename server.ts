@@ -1984,13 +1984,13 @@ async function initDB() {
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS procurement_audit_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        entity_type ENUM('PR', 'PO', 'WO') NOT NULL,
-        entity_id INT NOT NULL,
-        action VARCHAR(100) NOT NULL,
-        performed_by VARCHAR(255) NOT NULL,
-        role VARCHAR(50) NOT NULL,
-        remarks TEXT,
-        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        document_type ENUM('PR', 'PO', 'WO') NOT NULL,
+        document_id INT NOT NULL,
+        action_type VARCHAR(100) NOT NULL,
+        actor_name VARCHAR(255) NOT NULL,
+        actor_role VARCHAR(50) NOT NULL,
+        action_details TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -5477,7 +5477,7 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
 
 async function logProcurementAction(connection: mysql.PoolConnection | mysql.Pool, entityType: 'PR' | 'PO', entityId: number, action: string, user: any, remarks?: string) {
   await connection.execute(
-    `INSERT INTO procurement_audit_logs (entity_type, entity_id, action, performed_by, role, remarks)
+    `INSERT INTO procurement_audit_logs (document_type, document_id, action_type, actor_name, actor_role, action_details)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [entityType, entityId, action, user.name || user.email, user.role, remarks || '']
   );
@@ -6425,8 +6425,8 @@ api.get('/procurement/audit', authorizeAction('procurement', 'view'), async (req
     const [rows] = await pool.execute(`
       SELECT *
       FROM procurement_audit_logs
-      WHERE entity_type IN ('PR', 'PO')
-      ORDER BY createdAt DESC
+      WHERE document_type IN ('PR', 'PO')
+      ORDER BY timestamp DESC
       LIMIT 500
     `);
     res.status(200).json(rows);

@@ -6,7 +6,7 @@ interface ProcurementAuditDashboardProps {
 }
 
 export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardProps) {
-  const activeProcurementLogs = data.filter((log) => log.entity_type === 'PR' || log.entity_type === 'PO');
+  const activeProcurementLogs = data.filter((log) => log.document_type === 'PR' || log.document_type === 'PO');
 
   return (
     <div className="p-8">
@@ -33,9 +33,9 @@ export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardPro
             <div key={log.id} className="flex gap-8 group">
               <div className="relative z-10">
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-transform group-hover:scale-110 ${
-                  log.action.includes('APPROVED') ? 'bg-emerald-600' : 
-                  log.action.includes('REJECTED') ? 'bg-rose-600' : 
-                  log.action.includes('SUBMITTED') ? 'bg-blue-600' : 
+                  log.action_type.includes('APPROVED') ? 'bg-emerald-600' : 
+                  log.action_type.includes('REJECTED') ? 'bg-rose-600' : 
+                  log.action_type.includes('SUBMITTED') ? 'bg-blue-600' : 
                   'bg-slate-700'
                 }`}>
                   <History className="w-6 h-6 text-white" />
@@ -46,21 +46,21 @@ export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardPro
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                   <div className="flex items-center gap-3">
                     <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
-                      log.action.includes('APPROVED') ? 'bg-emerald-100 text-emerald-700 border-emerald-200' :
-                      log.action.includes('REJECTED') ? 'bg-rose-100 text-rose-700 border-rose-200' :
+                      log.action_type.includes('APPROVED') ? 'bg-emerald-100 text-emerald-700 border-emerald-200' :
+                      log.action_type.includes('REJECTED') ? 'bg-rose-100 text-rose-700 border-rose-200' :
                       'bg-slate-200 text-slate-700 border-slate-300'
                     }`}>
-                      {log.action}
+                      {log.action_type}
                     </span>
                     <span className="text-slate-400 font-bold text-sm">•</span>
                     <span className="flex items-center text-sm font-black text-slate-900">
                       <Tag className="w-4 h-4 mr-1.5 text-slate-400" />
-                      {log.entity_type} #{log.entity_id}
+                      {log.document_type} #{log.document_id}
                     </span>
                   </div>
                   <span className="flex items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
                     <Calendar className="w-4 h-4 mr-1.5" />
-                    {new Date(log.createdAt).toLocaleString()}
+                    {new Date(log.timestamp).toLocaleString()}
                   </span>
                 </div>
 
@@ -71,8 +71,8 @@ export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardPro
                     </div>
                     <div>
                       <p className="text-xs font-black text-slate-400 uppercase tracking-wider">Performed By</p>
-                      <p className="text-sm font-bold text-slate-700">{log.performed_by}</p>
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight">{log.role}</p>
+                      <p className="text-sm font-bold text-slate-700">{log.actor_name}</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight">{log.actor_role}</p>
                     </div>
                   </div>
 
@@ -82,7 +82,7 @@ export function ProcurementAuditDashboard({ data }: ProcurementAuditDashboardPro
                     </div>
                     <div>
                       <p className="text-xs font-black text-slate-400 uppercase tracking-wider">Governance Remarks</p>
-                      <p className="text-sm text-slate-600 italic">"{log.remarks || 'No remarks provided.'}"</p>
+                      <p className="text-sm text-slate-600 italic">"{log.action_details || 'No remarks provided.'}"</p>
                     </div>
                   </div>
                 </div>
