@@ -1231,6 +1231,8 @@ async function initDB() {
     if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
     if (!colNames.includes('remarks')) await poolConnection.query("ALTER TABLE grns ADD COLUMN remarks TEXT");
     if (!colNames.includes('created_by')) await poolConnection.query("ALTER TABLE grns ADD COLUMN created_by VARCHAR(255) NOT NULL DEFAULT 'System'");
+    if (!colNames.includes('is_deleted')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE");
+    if (!colNames.includes('createdAt')) await poolConnection.query("ALTER TABLE grns ADD COLUMN createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
 
     // GRN Items table
     await poolConnection.query(`
