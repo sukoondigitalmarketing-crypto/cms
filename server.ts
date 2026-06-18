@@ -1229,6 +1229,7 @@ async function initDB() {
     }
     if (!colNames.includes('is_emergency')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_emergency BOOLEAN DEFAULT FALSE");
     if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
+    if (!colNames.includes('remarks')) await poolConnection.query("ALTER TABLE grns ADD COLUMN remarks TEXT");
 
     // GRN Items table
     await poolConnection.query(`
