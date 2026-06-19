@@ -974,6 +974,48 @@ async function initDB() {
       await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
     }
 
+    // Fix foreign key for material_issue_items.voucher_id if incorrect
+    console.log("=== CHECKING MATERIAL ISSUE ITEMS FOREIGN KEY ===");
+    const [fkCheck]: any = await poolConnection.query(
+      `SELECT CONSTRAINT_NAME, REFERENCED_TABLE_NAME 
+       FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+       WHERE TABLE_NAME = 'material_issue_items' 
+       AND COLUMN_NAME = 'voucher_id' 
+       AND REFERENCED_TABLE_SCHEMA = DATABASE()`
+    );
+    if (fkCheck.length > 0 && fkCheck[0].REFERENCED_TABLE_NAME === 'material_issues') {
+      console.log("Fixing incorrect foreign key for material_issue_items.voucher_id...");
+      try {
+        await poolConnection.query(`ALTER TABLE material_issue_items DROP FOREIGN KEY ${fkCheck[0].CONSTRAINT_NAME}`);
+      } catch (e) {
+        console.log("Warning: Failed to drop old foreign key (may not exist or already fixed)");
+      }
+      try {
+        await poolConnection.query(`
+          ALTER TABLE material_issue_items 
+          ADD CONSTRAINT fk_material_issue_items_voucher 
+          FOREIGN KEY (voucher_id) REFERENCES material_issue_vouchers(id) ON DELETE CASCADE
+        `);
+        console.log("Successfully fixed foreign key for material_issue_items.voucher_id!");
+      } catch (e) {
+        console.log("Warning: Failed to add new foreign key (may already exist)");
+      }
+    } else if (fkCheck.length === 0) {
+      console.log("Adding missing foreign key for material_issue_items.voucher_id...");
+      try {
+        await poolConnection.query(`
+          ALTER TABLE material_issue_items 
+          ADD CONSTRAINT fk_material_issue_items_voucher 
+          FOREIGN KEY (voucher_id) REFERENCES material_issue_vouchers(id) ON DELETE CASCADE
+        `);
+        console.log("Successfully added foreign key for material_issue_items.voucher_id!");
+      } catch (e) {
+        console.log("Warning: Failed to add foreign key (may already exist)");
+      }
+    } else {
+      console.log("material_issue_items.voucher_id foreign key is already correct!");
+    }
+
     // 🔄 Legacy Migration Block
     const [existingVouchers]: any = await poolConnection.query('SELECT COUNT(*) as count FROM material_issue_vouchers');
     if (existingVouchers[0].count === 0) {
