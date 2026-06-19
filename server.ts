@@ -912,6 +912,18 @@ async function initDB() {
     if (!mivColNames.includes('status')) {
       await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN status ENUM('ACTIVE', 'PARTIALLY_REVERTED', 'FULLY_REVERTED', 'VOID') DEFAULT 'ACTIVE'");
     }
+    if (!mivColNames.includes('total_valuation')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN total_valuation DECIMAL(15,2) DEFAULT 0.00");
+    }
+    if (!mivColNames.includes('total_items')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN total_items INT DEFAULT 0");
+    }
+    if (!mivColNames.includes('updated_at')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+    }
+    if (!mivColNames.includes('createdAt')) {
+      await poolConnection.query("ALTER TABLE material_issue_vouchers ADD COLUMN createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+    }
 
     // 🛡️ Performance Indexes for Voucher System
     await addIndexSafe("CREATE INDEX idx_miv_no ON material_issue_vouchers(voucher_no)");
@@ -930,6 +942,36 @@ async function initDB() {
     }
     if (!miiColNames.includes('revert_status')) {
       await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN revert_status ENUM('ACTIVE', 'REVERTED') DEFAULT 'ACTIVE'");
+    }
+    if (!miiColNames.includes('unit')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN unit VARCHAR(50)");
+    }
+    if (!miiColNames.includes('total_cost')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN total_cost DECIMAL(15,2) DEFAULT 0.00");
+    }
+    if (!miiColNames.includes('batch_details')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN batch_details JSON");
+    }
+    if (!miiColNames.includes('grn_id')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN grn_id INT DEFAULT NULL");
+      try {
+        await poolConnection.query("ALTER TABLE material_issue_items ADD FOREIGN KEY (grn_id) REFERENCES grns(id) ON DELETE SET NULL");
+      } catch (e) {}
+    }
+    if (!miiColNames.includes('grn_number')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN grn_number VARCHAR(100)");
+    }
+    if (!miiColNames.includes('reverted_at')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN reverted_at TIMESTAMP NULL DEFAULT NULL");
+    }
+    if (!miiColNames.includes('reverted_by')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN reverted_by VARCHAR(255) DEFAULT NULL");
+    }
+    if (!miiColNames.includes('revert_reason')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN revert_reason TEXT DEFAULT NULL");
+    }
+    if (!miiColNames.includes('createdAt')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
     }
 
     // 🔄 Legacy Migration Block
