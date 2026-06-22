@@ -1,6 +1,6 @@
 (async()=>{
   const fetch = globalThis.fetch || (await import('node-fetch')).default;
-  const token = '2f11076d587ee8b35976aee5e1e10e649e144b8c102c0ffbde677778b40dc5c9';
+  const token = process.env.TEST_SESSION_TOKEN || 'YOUR_TEST_SESSION_TOKEN_HERE';
   const ids = [20,25];
   for (const id of ids) {
     const r = await fetch('http://localhost:3000/api/procurement/po/' + id, { headers: { 'Authorization': 'Bearer ' + token } });
