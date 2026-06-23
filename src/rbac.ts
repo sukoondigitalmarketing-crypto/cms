@@ -11,7 +11,8 @@ export type RbacModule =
   | 'approvals'
   | 'customers'
   | 'contractor_payments'
-  | 'rbac';
+  | 'rbac'
+  | 'vendor_invoices';
 
 export type RbacAction =
   | 'view'
@@ -39,6 +40,7 @@ export const RBAC_MODULES: { key: RbacModule; label: string; actions: RbacAction
   { key: 'approvals',           label: 'Approval Requests',    actions: ['view', 'create', 'approve', 'delete', 'export'] },
   { key: 'customers',           label: 'Customer & Ledger',    actions: ['view', 'create', 'edit', 'delete', 'export'] },
   { key: 'contractor_payments', label: 'Contractor Payments',  actions: ['view', 'create', 'edit', 'delete', 'approve', 'export'] },
+  { key: 'vendor_invoices',     label: 'Vendor Invoices',      actions: ['view', 'create', 'edit', 'delete', 'export'] },
 ];
 
 export const MATRIX_ACTIONS: RbacAction[] = ['view', 'create', 'edit', 'delete', 'approve', 'export'];
@@ -84,6 +86,7 @@ export const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
     approvals: allActions,
     customers: allActions,
     contractor_payments: allActions,
+    vendor_invoices: allActions,
     rbac: { view: true, edit: true, manage_users: true, manage_rbac: true, delete: true, export: true },
   },
   [ROLES.CA]: {
@@ -97,6 +100,7 @@ export const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
     approvals: { view: true, approve: true, export: true },
     customers: { view: true, create: true, edit: true, export: true },
     contractor_payments: { view: true, create: true, edit: true, approve: true, export: true },
+    vendor_invoices: { view: true, create: true, edit: true, delete: true, export: true },
     rbac: { view: false, manage_users: false, manage_rbac: false },
   },
   [ROLES.GENERAL_MANAGER]: {
@@ -110,6 +114,7 @@ export const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
     approvals: { view: true, create: true, approve: true, export: true },
     customers: { view: true, export: true },
     contractor_payments: { view: true, approve: true, export: true },
+    vendor_invoices: { view: true, create: true, edit: true, export: true },
     rbac: { view: false, manage_users: false, manage_rbac: false },
   },
   [ROLES.STORE_KEEPER]: {

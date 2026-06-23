@@ -37,6 +37,7 @@ import { ContractorPaymentsDashboard } from './components/ContractorPaymentsDash
 import { CeoSecuritySettings } from './components/CeoSecuritySettings';
 import { ReportsDashboard } from './components/ReportsDashboard';
 import { ProcurementDashboard } from './components/procurement/ProcurementDashboard';
+import { VendorInvoicesDashboard } from './components/VendorInvoicesDashboard';
 import { getAuthToken } from './services/api';
 import { hasPermission } from './rbac';
 
@@ -179,23 +180,7 @@ export default function App() {
           ) : activeTab === 'contractor-payments' ? (
             <ContractorPaymentsDashboard role={loggedInRole} />
           ) : activeTab === 'vendor-invoices' ? (
-            <div className="flex-1 flex items-center justify-center p-12">
-              <div className="bg-white rounded-2xl p-10 border border-gray-200 shadow-xl max-w-md w-full text-center transform hover:scale-[1.01] transition-all duration-300">
-                <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-blue-100 shadow-inner animate-bounce">
-                  <Receipt className="w-8 h-8" />
-                </div>
-                <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-2">Vendor Invoices</h2>
-                <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 mb-4">
-                  🚧 Phase 0 Setup
-                </div>
-                <p className="text-sm text-slate-500 font-medium">
-                  Module Under Development
-                </p>
-                <div className="mt-6 pt-6 border-t border-slate-100 text-xs text-slate-400">
-                  BuildCore Finance Module
-                </div>
-              </div>
-            </div>
+            <VendorInvoicesDashboard role={loggedInRole} />
           ) : activeTab === 'vendor-payments' ? (
             <div className="flex-1 flex items-center justify-center p-12">
               <div className="bg-white rounded-2xl p-10 border border-gray-200 shadow-xl max-w-md w-full text-center transform hover:scale-[1.01] transition-all duration-300">

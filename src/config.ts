@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿/**
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿/**
  * Application Configuration
  * All sensitive settings should come from environment variables
  */
@@ -65,6 +65,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: true,
     canCreatePO: true,
     canOverrideProcurement: true,
+    canManageVendorInvoices: true,
+    canViewVendorInvoices: true,
+    canCreateVendorInvoices: true,
+    canDeleteVendorInvoices: true,
   },
   [ROLES.CA]: {
     canViewDashboard: true,
@@ -101,6 +105,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: true,
     canCreatePO: false,
     canOverrideProcurement: true,
+    canManageVendorInvoices: true,
+    canViewVendorInvoices: true,
+    canCreateVendorInvoices: true,
+    canDeleteVendorInvoices: true,
   },
   [ROLES.GENERAL_MANAGER]: {
     canViewDashboard: true,
@@ -133,6 +141,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: true,
+    canViewVendorInvoices: true,
+    canCreateVendorInvoices: true,
+    canDeleteVendorInvoices: false,
   },
   [ROLES.SALES]: {
     canViewDashboard: true,
@@ -167,6 +179,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: false,
+    canViewVendorInvoices: false,
+    canCreateVendorInvoices: false,
+    canDeleteVendorInvoices: false,
   },
   [ROLES.STORE_KEEPER]: {
     canViewDashboard: true,
@@ -203,6 +219,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: false,
+    canViewVendorInvoices: false,
+    canCreateVendorInvoices: false,
+    canDeleteVendorInvoices: false,
   },
   [ROLES.SITE_INCHARGE]: {
     canViewDashboard: false,
@@ -233,6 +253,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: false,
+    canViewVendorInvoices: false,
+    canCreateVendorInvoices: false,
+    canDeleteVendorInvoices: false,
   },
   [ROLES.EXECUTIVE]: {
     canViewDashboard: true,
@@ -269,9 +293,13 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: false,
+    canViewVendorInvoices: false,
+    canCreateVendorInvoices: false,
+    canDeleteVendorInvoices: false,
   },
   [ROLES.SITE_ENGINEER]: {
-    // Cloned from SITE_INCHARGE â€” separate immutable identity, permissions may diverge later
+    // Cloned from SITE_INCHARGE — separate immutable identity, permissions may diverge later
     canViewDashboard: false,
     canManageUsers: false,
     canManageMasters: false,
@@ -300,6 +328,10 @@ export const ROLE_PERMISSIONS = {
     canApprovePR: false,
     canCreatePO: false,
     canOverrideProcurement: false,
+    canManageVendorInvoices: false,
+    canViewVendorInvoices: false,
+    canCreateVendorInvoices: false,
+    canDeleteVendorInvoices: false,
   },
 } as const;
 // Validation constraints
