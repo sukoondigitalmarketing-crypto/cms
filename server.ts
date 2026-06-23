@@ -51,7 +51,7 @@ const ROLES = {
   EXECUTIVE: 'EXECUTIVE'
 } as const;
 
-type RbacModule = 'dashboard' | 'masters' | 'procurement' | 'inventory' | 'grn' | 'reports' | 'projects' | 'approvals' | 'customers' | 'contractor_payments' | 'rbac';
+type RbacModule = 'dashboard' | 'masters' | 'procurement' | 'inventory' | 'grn' | 'reports' | 'projects' | 'approvals' | 'customers' | 'contractor_payments' | 'rbac' | 'vendor_invoices';
 type RbacAction = 'view' | 'create' | 'edit' | 'delete' | 'approve' | 'cancel' | 'export' | 'rollback' | 'manage_users' | 'manage_rbac';
 
 function normalizeRole(role?: any): string {
@@ -60,7 +60,7 @@ function normalizeRole(role?: any): string {
   return candidate;
 }
 
-const RBAC_MODULES: RbacModule[] = ['dashboard', 'masters', 'procurement', 'inventory', 'grn', 'reports', 'projects', 'approvals', 'customers', 'contractor_payments', 'rbac'];
+const RBAC_MODULES: RbacModule[] = ['dashboard', 'masters', 'procurement', 'inventory', 'grn', 'reports', 'projects', 'approvals', 'customers', 'contractor_payments', 'rbac', 'vendor_invoices'];
 const RBAC_ACTIONS: RbacAction[] = ['view', 'create', 'edit', 'delete', 'approve', 'cancel', 'export', 'rollback', 'manage_users', 'manage_rbac'];
 
 const DEFAULT_ROLE_PERMISSIONS: Record<string, Partial<Record<RbacModule, Partial<Record<RbacAction, boolean>>>>> = {
@@ -76,6 +76,7 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, Partial<Record<RbacModule, Partia
     approvals: { view: true, approve: true, export: true },
     customers: { view: true, create: true, edit: true, export: true },
     contractor_payments: { view: true, create: true, edit: true, approve: true, export: true },
+    vendor_invoices: { view: true, create: true, edit: true, delete: true, export: true },
   },
   [ROLES.GENERAL_MANAGER]: {
     dashboard: { view: true, export: true },
@@ -88,6 +89,7 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, Partial<Record<RbacModule, Partia
     approvals: { view: true, create: true, approve: true, export: true },
     customers: { view: true, export: true },
     contractor_payments: { view: true, approve: true, export: true },
+    vendor_invoices: { view: true, create: true, edit: true, export: true },
   },
   [ROLES.STORE_KEEPER]: {
     dashboard: { view: true },
@@ -1311,6 +1313,13 @@ async function initDB() {
         await poolConnection.query("ALTER TABLE grns ADD FOREIGN KEY (po_id) REFERENCES purchase_orders(id) ON DELETE SET NULL");
       } catch (e) {}
     }
+    if (!colNames.includes('vendor_id')) {
+      await poolConnection.query("ALTER TABLE grns ADD COLUMN vendor_id INT DEFAULT NULL AFTER po_id");
+      try {
+        await poolConnection.query("ALTER TABLE grns ADD FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL");
+      } catch (e) {}
+      await poolConnection.query("UPDATE grns g JOIN vendors v ON g.vendorName = v.vendor_name SET g.vendor_id = v.id WHERE g.vendorName IS NOT NULL");
+    }
     if (!colNames.includes('is_emergency')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_emergency BOOLEAN DEFAULT FALSE");
     if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
     if (!colNames.includes('remarks')) await poolConnection.query("ALTER TABLE grns ADD COLUMN remarks TEXT");
@@ -1511,6 +1520,43 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS system_flags (
         key_name VARCHAR(100) PRIMARY KEY,
         key_value VARCHAR(100)
+      )
+    `);
+
+    // Vendor Invoices Table
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS vendor_invoices (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vendor_id INT NOT NULL,
+        invoice_number VARCHAR(100) NOT NULL,
+        invoice_date DATE NOT NULL,
+        remarks TEXT,
+        reference_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        invoice_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        variance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        status VARCHAR(50) NOT NULL DEFAULT 'UNPAID',
+        vendor_name_snapshot VARCHAR(255) NOT NULL,
+        vendor_gst_snapshot VARCHAR(50) NULL,
+        vendor_address_snapshot TEXT NULL,
+        created_by VARCHAR(255) NOT NULL,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id),
+        UNIQUE KEY unique_vendor_invoice (vendor_id, invoice_number)
+      )
+    `);
+
+    // Vendor Invoice GRNs Linking Table
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS vendor_invoice_grns (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vendor_invoice_id INT NOT NULL,
+        grn_id INT NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vendor_invoice_id) REFERENCES vendor_invoices(id) ON DELETE CASCADE,
+        FOREIGN KEY (grn_id) REFERENCES grns(id),
+        UNIQUE KEY unique_grn_link (grn_id)
       )
     `);
 
@@ -5355,6 +5401,33 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
   }
 });
 
+api.get('/grns/available-for-invoice', authorizeAction('vendor_invoices', 'view'), async (req, res) => {
+  const { vendor_id } = req.query;
+  if (!vendor_id) {
+    return res.status(400).json({ error: 'Vendor ID is required' });
+  }
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT g.id, g.grn_number, g.grn_date, p.name as projectName, g.finalAmount, g.total_amount
+       FROM grns g
+       LEFT JOIN projects p ON g.projectId = p.id
+       WHERE g.is_deleted = FALSE 
+         AND g.status IN ('ACTIVE', 'POSTED')
+         AND g.vendorName = (SELECT vendor_name FROM vendors WHERE id = ?)
+         AND g.id NOT IN (
+           SELECT grn_id FROM vendor_invoice_grns vig
+           JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id
+           WHERE vi.is_deleted = FALSE
+         )`,
+      [vendor_id]
+    );
+    res.status(200).json(rows);
+  } catch (error: any) {
+    console.error('Error fetching available GRNs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 api.get('/grns/:id', authorizeAction('grn', 'view'), async (req, res) => {
   const { id } = req.params;
   try {
@@ -6581,14 +6654,22 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
       }
     }
 
+    let resolvedVendorId = null;
+    if (vendorName) {
+      const [vRows]: any = await connection.execute('SELECT id FROM vendors WHERE vendor_name = ?', [vendorName]);
+      if (vRows.length > 0) resolvedVendorId = vRows[0].id;
+    } else if (po && po.vendor_id) {
+      resolvedVendorId = po.vendor_id;
+    }
+
     const subtotal = items.reduce((acc: number, item: any) => acc + (parseFloat(item.totalAmount) || (parseFloat(item.quantity) * parseFloat(item.rate)) || 0), 0);
     const discAmt = (discountType === 'PERCENTAGE') ? (subtotal * (parseFloat(discountValue) || 0) / 100) : (parseFloat(discountValue) || 0);
     const computedFinalAmount = finalAmount != null ? finalAmount : Math.max(0, subtotal - discAmt + (parseFloat(transportCharges) || 0) + (parseFloat(otherCharges) || 0));
 
     const [grnResult]: any = await connection.execute(
-      `INSERT INTO grns (grn_number, po_id, is_emergency, emergency_reason, vendorName, projectId, destination_type, grn_date, total_amount, remarks, created_by, gstNumber, discountType, discountValue, finalAmount, transportCharges, otherCharges, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [grn_number, po_id || null, is_emergency ? 1 : 0, emergency_reason || null, vendorName || null, projectId || null, destination_type || 'CENTRAL_STORE', grn_date, subtotal, remarks || '', created_by, gstNumber || null, discountType || null, parseFloat(discountValue) || 0, computedFinalAmount, parseFloat(transportCharges) || 0, parseFloat(otherCharges) || 0, GRN_STATUS.POSTED]
+      `INSERT INTO grns (grn_number, po_id, vendor_id, is_emergency, emergency_reason, vendorName, projectId, destination_type, grn_date, total_amount, remarks, created_by, gstNumber, discountType, discountValue, finalAmount, transportCharges, otherCharges, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [grn_number, po_id || null, resolvedVendorId, is_emergency ? 1 : 0, emergency_reason || null, vendorName || null, projectId || null, destination_type || 'CENTRAL_STORE', grn_date, subtotal, remarks || '', created_by, gstNumber || null, discountType || null, parseFloat(discountValue) || 0, computedFinalAmount, parseFloat(transportCharges) || 0, parseFloat(otherCharges) || 0, GRN_STATUS.POSTED]
     );
     const grnId = grnResult.insertId;
 
@@ -6709,6 +6790,16 @@ api.post('/grns/:id/cancel', authorizeAction('grn', 'cancel'), async (req, res) 
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+
+    const [linkedInvoice]: any = await connection.execute(
+      `SELECT vi.invoice_number FROM vendor_invoice_grns vig
+       JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id
+       WHERE vig.grn_id = ? AND vi.is_deleted = FALSE LIMIT 1`,
+      [id]
+    );
+    if (linkedInvoice.length > 0) {
+      throw new Error(`This GRN is linked to Vendor Invoice ${linkedInvoice[0].invoice_number} and cannot be modified.`);
+    }
 
     // 1. Verify status and fetch destination_type
     const [grnRows]: any = await connection.execute(
@@ -6857,6 +6948,22 @@ api.put('/grns/:id', authorizeAction('grn', 'edit'), async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    const [linkedInvoice]: any = await connection.execute(
+      `SELECT vi.invoice_number FROM vendor_invoice_grns vig
+       JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id
+       WHERE vig.grn_id = ? AND vi.is_deleted = FALSE LIMIT 1`,
+      [id]
+    );
+    if (linkedInvoice.length > 0) {
+      throw new Error(`This GRN is linked to Vendor Invoice ${linkedInvoice[0].invoice_number} and cannot be modified.`);
+    }
+
+    let resolvedVendorId = null;
+    if (vendorName) {
+      const [vRows]: any = await connection.execute('SELECT id FROM vendors WHERE vendor_name = ?', [vendorName]);
+      if (vRows.length > 0) resolvedVendorId = vRows[0].id;
+    }
+
     // 1. Get original GRN state
     const [oldGrnRows]: any = await connection.execute(
       'SELECT * FROM grns WHERE id = ? FOR UPDATE', 
@@ -6902,8 +7009,8 @@ api.put('/grns/:id', authorizeAction('grn', 'edit'), async (req, res) => {
       }
 
       await connection.execute(
-        `UPDATE grns SET vendorName = ?, gstNumber = ?, grn_date = ?, remarks = ?, edited_by = ?, edit_reason = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [vendorName || null, gstNumber || null, grn_date, remarks || '', edited_by, edit_reason, id]
+        `UPDATE grns SET vendorName = ?, vendor_id = ?, gstNumber = ?, grn_date = ?, remarks = ?, edited_by = ?, edit_reason = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [vendorName || null, resolvedVendorId, gstNumber || null, grn_date, remarks || '', edited_by, edit_reason, id]
       );
       await connection.execute('UPDATE inventory_batches SET received_date = ? WHERE grn_id = ?', [grn_date, id]);
 
@@ -7041,6 +7148,148 @@ api.put('/grns/:id', authorizeAction('grn', 'edit'), async (req, res) => {
     res.status(500).json({ error: error.message });
   } finally {
     if (connection) connection.release();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// VENDOR INVOICES APIs
+// ═══════════════════════════════════════════════════════════════
+
+api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (req, res) => {
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT vi.*, COUNT(vig.grn_id) as grn_count 
+       FROM vendor_invoices vi
+       LEFT JOIN vendor_invoice_grns vig ON vi.id = vig.vendor_invoice_id
+       WHERE vi.is_deleted = FALSE
+       GROUP BY vi.id
+       ORDER BY vi.createdAt DESC`
+    );
+    res.status(200).json(rows);
+  } catch (error: any) {
+    console.error('Error fetching vendor invoices:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async (req, res) => {
+  const { vendor_id, invoice_number, invoice_date, remarks, grn_ids, invoice_amount } = req.body;
+
+  if (!vendor_id || !invoice_number || !invoice_date || !grn_ids || !grn_ids.length || invoice_amount === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Check composite uniqueness
+    const [existing]: any = await connection.execute(
+      'SELECT id FROM vendor_invoices WHERE vendor_id = ? AND invoice_number = ? AND is_deleted = FALSE LIMIT 1',
+      [vendor_id, invoice_number]
+    );
+    if (existing.length > 0) {
+      throw new Error(`Invoice number ${invoice_number} already exists for this vendor.`);
+    }
+
+    // Get vendor details for snapshots
+    const [vendors]: any = await connection.execute(
+      'SELECT vendor_name, gst_number, address FROM vendors WHERE id = ?',
+      [vendor_id]
+    );
+    if (vendors.length === 0) {
+      throw new Error('Selected vendor not found.');
+    }
+    const vendor = vendors[0];
+
+    // Fetch GRNs
+    const [grns]: any = await connection.query(
+      'SELECT id, finalAmount, total_amount, status, vendorName, grn_number FROM grns WHERE id IN (?) AND is_deleted = FALSE',
+      [grn_ids]
+    );
+
+    if (grns.length !== grn_ids.length) {
+      throw new Error('One or more of the selected GRNs could not be found.');
+    }
+
+    for (const grn of grns) {
+      // Verify vendor match
+      if (grn.vendorName !== vendor.vendor_name) {
+        throw new Error(`GRN ${grn.grn_number} does not belong to vendor ${vendor.vendor_name}.`);
+      }
+      // Verify status
+      if (!['ACTIVE', 'POSTED'].includes(grn.status)) {
+        throw new Error(`GRN ${grn.grn_number} is not in ACTIVE or POSTED status.`);
+      }
+    }
+
+    // Verify none of the selected GRNs are already linked to an active invoice
+    const [existingLinks]: any = await connection.query(
+      `SELECT vig.grn_id, vi.invoice_number 
+       FROM vendor_invoice_grns vig 
+       JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id 
+       WHERE vig.grn_id IN (?) AND vi.is_deleted = FALSE`,
+      [grn_ids]
+    );
+    if (existingLinks.length > 0) {
+      throw new Error(`GRN is already linked to another active invoice (Invoice: ${existingLinks[0].invoice_number}).`);
+    }
+
+    // Calculate reference amount
+    const reference_amount = grns.reduce((sum: number, g: any) => sum + (parseFloat(g.finalAmount) || parseFloat(g.total_amount) || 0), 0);
+    const variance = parseFloat(invoice_amount) - reference_amount;
+
+    const createdBy = (req as any).user?.name || (req as any).user?.email || 'System';
+
+    // Insert Invoice
+    const [insertResult]: any = await connection.execute(
+      `INSERT INTO vendor_invoices (
+        vendor_id, invoice_number, invoice_date, remarks, reference_amount, invoice_amount, variance, status,
+        vendor_name_snapshot, vendor_gst_snapshot, vendor_address_snapshot, created_by, is_deleted
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, FALSE)`,
+      [
+        vendor_id, invoice_number, invoice_date, remarks || '', reference_amount, invoice_amount, variance,
+        vendor.vendor_name, vendor.gst_number || null, vendor.address || null, createdBy
+      ]
+    );
+
+    const invoiceId = insertResult.insertId;
+
+    // Link GRNs
+    for (const grnId of grn_ids) {
+      await connection.execute(
+        'INSERT INTO vendor_invoice_grns (vendor_invoice_id, grn_id) VALUES (?, ?)',
+        [invoiceId, grnId]
+      );
+    }
+
+    await connection.commit();
+    res.status(201).json({ id: invoiceId, message: 'Vendor Invoice created successfully.' });
+  } catch (error: any) {
+    if (connection) await connection.rollback();
+    console.error('Error creating vendor invoice:', error);
+    res.status(400).json({ error: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+api.delete('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'delete'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [result]: any = await pool.execute(
+      'UPDATE vendor_invoices SET is_deleted = TRUE WHERE id = ?',
+      [id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    res.status(200).json({ message: 'Vendor Invoice deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting vendor invoice:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
