@@ -976,6 +976,27 @@ async function initDB() {
       await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
     }
 
+    // Add new columns for Financial Finalization support (idempotent checks)
+    if (!miiColNames.includes('estimated_unit_cost')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN estimated_unit_cost DECIMAL(18,6) DEFAULT NULL");
+      await poolConnection.query("UPDATE material_issue_items SET estimated_unit_cost = CASE WHEN quantity > 0 THEN total_cost / quantity ELSE 0.00 END");
+      console.log("✅ Added material_issue_items.estimated_unit_cost and backfilled");
+    }
+    if (!miiColNames.includes('confirmed_unit_cost')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN confirmed_unit_cost DECIMAL(18,6) DEFAULT NULL");
+      console.log("✅ Added material_issue_items.confirmed_unit_cost");
+    }
+    if (!miiColNames.includes('estimated_total_cost')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN estimated_total_cost DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+      await poolConnection.query("UPDATE material_issue_items SET estimated_total_cost = total_cost");
+      console.log("✅ Added material_issue_items.estimated_total_cost and backfilled");
+    }
+    if (!miiColNames.includes('confirmed_total_cost')) {
+      await poolConnection.query("ALTER TABLE material_issue_items ADD COLUMN confirmed_total_cost DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+      console.log("✅ Added material_issue_items.confirmed_total_cost");
+    }
+
+
     // Fix foreign key for material_issue_items.voucher_id if incorrect
     console.log("=== CHECKING MATERIAL ISSUE ITEMS FOREIGN KEY ===");
     const [fkCheck]: any = await poolConnection.query(
@@ -1103,9 +1124,30 @@ async function initDB() {
     // Always ensure high precision for unit_price
     await poolConnection.query("ALTER TABLE inventory_batches MODIFY COLUMN unit_price DECIMAL(18,6) NOT NULL");
 
+    // Add new columns for Financial Finalization support (idempotent checks)
+    if (!batchColNames.includes('estimated_unit_price')) {
+      await poolConnection.query("ALTER TABLE inventory_batches ADD COLUMN estimated_unit_price DECIMAL(18,6) DEFAULT NULL");
+      await poolConnection.query("UPDATE inventory_batches SET estimated_unit_price = unit_price");
+      console.log("✅ Added inventory_batches.estimated_unit_price and backfilled from unit_price");
+    }
+    if (!batchColNames.includes('confirmed_unit_price')) {
+      await poolConnection.query("ALTER TABLE inventory_batches ADD COLUMN confirmed_unit_price DECIMAL(18,6) DEFAULT NULL");
+      console.log("✅ Added inventory_batches.confirmed_unit_price");
+    }
+    if (!batchColNames.includes('estimated_value_received')) {
+      await poolConnection.query("ALTER TABLE inventory_batches ADD COLUMN estimated_value_received DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+      await poolConnection.query("UPDATE inventory_batches SET estimated_value_received = total_value_received");
+      console.log("✅ Added inventory_batches.estimated_value_received and backfilled from total_value_received");
+    }
+    if (!batchColNames.includes('confirmed_value_received')) {
+      await poolConnection.query("ALTER TABLE inventory_batches ADD COLUMN confirmed_value_received DECIMAL(15,2) NOT NULL DEFAULT 0.00");
+      console.log("✅ Added inventory_batches.confirmed_value_received");
+    }
+
     if (!batchColNames.includes('is_void')) {
       await poolConnection.query("ALTER TABLE inventory_batches ADD COLUMN is_void BOOLEAN DEFAULT FALSE AFTER received_date");
     }
+
 
     // Inventory Additions (History) table
     await poolConnection.query(`
@@ -1345,6 +1387,24 @@ async function initDB() {
     // Ensure high precision for grn_items rate
     await poolConnection.query("ALTER TABLE grn_items MODIFY COLUMN rate DECIMAL(18,6) NOT NULL");
 
+    // Add new columns for Financial Finalization support (idempotent checks)
+    const [grnItemCols]: any = await poolConnection.query("SHOW COLUMNS FROM grn_items");
+    const grnItemColNames = grnItemCols.map((c: any) => c.Field);
+    if (!grnItemColNames.includes('estimated_rate')) {
+      await poolConnection.query("ALTER TABLE grn_items ADD COLUMN estimated_rate DECIMAL(18,6) DEFAULT NULL");
+      await poolConnection.query("UPDATE grn_items SET estimated_rate = rate");
+      console.log("✅ Added grn_items.estimated_rate and backfilled from rate");
+    }
+    if (!grnItemColNames.includes('confirmed_rate')) {
+      await poolConnection.query("ALTER TABLE grn_items ADD COLUMN confirmed_rate DECIMAL(18,6) DEFAULT NULL");
+      console.log("✅ Added grn_items.confirmed_rate");
+    }
+    if (!grnItemColNames.includes('rate_status')) {
+      await poolConnection.query("ALTER TABLE grn_items ADD COLUMN rate_status ENUM('ESTIMATED', 'CONFIRMED') DEFAULT 'ESTIMATED'");
+      console.log("✅ Added grn_items.rate_status");
+    }
+
+
     // Contractor Payments table
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS contractor_payments (
@@ -1547,6 +1607,18 @@ async function initDB() {
       )
     `);
 
+    const [viCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendor_invoices");
+    const viColNames = viCols.map((c: any) => c.Field);
+    if (!viColNames.includes('confirmed_by')) {
+      await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN confirmed_by VARCHAR(255) DEFAULT NULL");
+      console.log("✅ Added vendor_invoices.confirmed_by");
+    }
+    if (!viColNames.includes('confirmed_at')) {
+      await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN confirmed_at TIMESTAMP NULL DEFAULT NULL");
+      console.log("✅ Added vendor_invoices.confirmed_at");
+    }
+
+
     // Vendor Invoice GRNs Linking Table
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS vendor_invoice_grns (
@@ -1559,6 +1631,27 @@ async function initDB() {
         UNIQUE KEY unique_grn_link (grn_id)
       )
     `);
+
+    // Vendor Invoice Items Line-Item Table for Financial Finalization
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS vendor_invoice_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vendor_invoice_id INT NOT NULL,
+        grn_item_id INT NOT NULL,
+        billed_quantity DECIMAL(10,2) NOT NULL,
+        confirmed_rate DECIMAL(18,6) NOT NULL,
+        gst_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+        discount_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+        line_total DECIMAL(15,2) NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vendor_invoice_id) REFERENCES vendor_invoices(id) ON DELETE CASCADE,
+        FOREIGN KEY (grn_item_id) REFERENCES grn_items(id)
+      )
+    `);
+
+    // Safe Performance Indexes
+    await addIndexSafe("CREATE INDEX idx_vii_invoice ON vendor_invoice_items(vendor_invoice_id)");
+    await addIndexSafe("CREATE INDEX idx_vii_grn_item ON vendor_invoice_items(grn_item_id)");
 
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS roles_master (
@@ -2231,8 +2324,205 @@ async function initDB() {
   }
 }
 
-
 // ═══════════════════════════════════════════════════════════════
+// FINANCIAL FINALIZATION BACKEND FOUNDATIONS (MILESTONE 5.2)
+// ═══════════════════════════════════════════════════════════════
+
+export class AppError extends Error {
+  code: string;
+  statusCode: number;
+  details?: any[];
+
+  constructor(code: string, message: string, statusCode: number = 400, details?: any[]) {
+    super(message);
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
+    Object.setPrototypeOf(this, AppError.prototype);
+  }
+}
+
+export function handleApiError(res: express.Response, error: any) {
+  if (error instanceof AppError) {
+    return res.status(error.statusCode).json({
+      success: false,
+      error: {
+        code: error.code,
+        message: error.message,
+        details: error.details || []
+      }
+    });
+  }
+  
+  console.error('[UNEXPECTED_ERROR]:', error);
+  return res.status(500).json({
+    success: false,
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: error.message || 'An unexpected server error occurred.',
+      details: []
+    }
+  });
+}
+
+export class TransactionManager {
+  static async run<T>(dbPool: mysql.Pool, callback: (connection: mysql.PoolConnection) => Promise<T>): Promise<T> {
+    const connection = await dbPool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await callback(connection);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+}
+
+export const InvoiceRepository = {
+  async getInvoiceById(connection: mysql.Connection | mysql.Pool, id: number) {
+    const [rows]: any = await connection.query(
+      'SELECT * FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE',
+      [id]
+    );
+    return rows[0] || null;
+  },
+
+  async getInvoiceItems(connection: mysql.Connection | mysql.Pool, invoiceId: number) {
+    const [rows]: any = await connection.query(
+      'SELECT * FROM vendor_invoice_items WHERE vendor_invoice_id = ?',
+      [invoiceId]
+    );
+    return rows;
+  },
+
+  async getGrnItemById(connection: mysql.Connection | mysql.Pool, grnItemId: number) {
+    const [rows]: any = await connection.query(
+      'SELECT * FROM grn_items WHERE id = ?',
+      [grnItemId]
+    );
+    return rows[0] || null;
+  },
+
+  async getActiveBatchesByGrn(connection: mysql.Connection | mysql.Pool, grnId: number) {
+    const [rows]: any = await connection.query(
+      'SELECT * FROM inventory_batches WHERE grn_id = ? AND is_void = FALSE',
+      [grnId]
+    );
+    return rows;
+  }
+};
+
+export const InvoiceValidator = {
+  async validateVendorMatch(connection: mysql.Connection | mysql.Pool, vendorId: number, grnIds: number[]) {
+    if (!grnIds.length) return;
+    const [grns]: any = await connection.query(
+      'SELECT id, vendor_id, grn_number FROM grns WHERE id IN (?) AND is_deleted = FALSE',
+      [grnIds]
+    );
+    for (const grn of grns) {
+      if (grn.vendor_id !== vendorId) {
+        throw new AppError(
+          'BUSINESS_RULE_ERROR',
+          `GRN ${grn.grn_number} does not belong to the selected vendor.`,
+          422
+        );
+      }
+    }
+  },
+
+  async validateQuantityCaps(connection: mysql.Connection | mysql.Pool, grnItemId: number, requestedQty: number, currentInvoiceItemId?: number) {
+    const [grnItem]: any = await connection.query('SELECT quantity, item_name FROM grn_items WHERE id = ?', [grnItemId]);
+    if (!grnItem.length) {
+      throw new AppError('NOT_FOUND', 'GRN Item not found.', 404);
+    }
+    
+    // Sum previously billed quantity for this grn item
+    const [billed]: any = await connection.query(
+      `SELECT SUM(vii.billed_quantity) as total_billed 
+       FROM vendor_invoice_items vii
+       JOIN vendor_invoices vi ON vii.vendor_invoice_id = vi.id
+       WHERE vii.grn_item_id = ? AND vi.is_deleted = FALSE
+       ${currentInvoiceItemId ? 'AND vii.id != ?' : ''}`,
+      currentInvoiceItemId ? [grnItemId, currentInvoiceItemId] : [grnItemId]
+    );
+
+    const totalBilled = parseFloat(billed[0].total_billed || '0');
+    const grnQty = parseFloat(grnItem[0].quantity);
+    if (totalBilled + requestedQty > grnQty) {
+      throw new AppError(
+        'BUSINESS_RULE_ERROR',
+        `Billed quantity for ${grnItem[0].item_name} exceeds remaining unbilled GRN quantity. Max allowed: ${grnQty - totalBilled}.`,
+        422
+      );
+    }
+  },
+
+  async validatePeriodLock(connection: mysql.Connection | mysql.Pool, dateString: string) {
+    // Basic check placeholder for billing/accounting period locks
+    return true; 
+  }
+};
+
+export const AuditService = {
+  async logFinalization(connection: mysql.PoolConnection, actor: string, invoiceId: number, details: any) {
+    await connection.query(
+      'INSERT INTO audit_logs (actor, action, details) VALUES (?, ?, ?)',
+      [actor, 'FINANCIAL_FINALIZATION', JSON.stringify({ invoiceId, ...details })]
+    );
+  }
+};
+
+export const FinancialFinalizationService = {
+  async validateInvoice(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Perform all final pre-validation checks before locking rates
+    console.log(`[FinancialFinalizationService] validateInvoice called for ID: ${invoiceId}`);
+  },
+
+  async prepareFinalization(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Gather invoice details, variance details, and fetch original rates
+    console.log(`[FinancialFinalizationService] prepareFinalization called for ID: ${invoiceId}`);
+  },
+
+  async finalizeRates(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Shift rate statuses to CONFIRMED on grn_items
+    console.log(`[FinancialFinalizationService] finalizeRates called for ID: ${invoiceId}`);
+  },
+
+  async updateInventoryValuation(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Revalue inventory batches and update moving average price cache
+    console.log(`[FinancialFinalizationService] updateInventoryValuation called for ID: ${invoiceId}`);
+  },
+
+  async updateMaterialIssues(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Find issues from updated batches and recalculate costs
+    console.log(`[FinancialFinalizationService] updateMaterialIssues called for ID: ${invoiceId}`);
+  },
+
+  async updateProjectCost(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Trigger project costing summaries updates if necessary
+    console.log(`[FinancialFinalizationService] updateProjectCost called for ID: ${invoiceId}`);
+  },
+
+  async updateVendorLedger(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Post confirmed invoice to vendor AP ledger
+    console.log(`[FinancialFinalizationService] updateVendorLedger called for ID: ${invoiceId}`);
+  },
+
+  async updateVendorPayments(connection: mysql.PoolConnection, invoiceId: number): Promise<void> {
+    // TODO: Set invoice status to UNPAID making it visible for payment
+    console.log(`[FinancialFinalizationService] updateVendorPayments called for ID: ${invoiceId}`);
+  },
+
+  async createAuditTrail(connection: mysql.PoolConnection, invoiceId: number, actor: string, details: any): Promise<void> {
+    // TODO: Generate the final confirmation log payload in the audit log table
+    console.log(`[FinancialFinalizationService] createAuditTrail called for ID: ${invoiceId} by ${actor}`);
+  }
+};
+
 // PROJECT MASTER ROUTES
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
@@ -5441,9 +5731,11 @@ api.get('/grns/:id', authorizeAction('grn', 'view'), async (req, res) => {
     if (grnRows.length === 0) return res.status(404).json({ error: 'GRN not found' });
 
     const [itemRows]: any = await pool.execute(`
-      SELECT gi.*, inv.unit, inv.category 
+      SELECT gi.*, inv.unit, inv.category, COALESCE(pi.gst_percent, 0) as gst_percent
       FROM grn_items gi 
       JOIN inventory inv ON gi.inventory_id = inv.id 
+      LEFT JOIN grns g ON gi.grn_id = g.id
+      LEFT JOIN procurement_items pi ON pi.parent_type = 'PO' AND pi.parent_id = g.po_id AND pi.inventory_id = gi.inventory_id
       WHERE gi.grn_id = ?
     `, [id]);
 
@@ -7158,9 +7450,17 @@ api.put('/grns/:id', authorizeAction('grn', 'edit'), async (req, res) => {
 api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (req, res) => {
   try {
     const [rows]: any = await pool.query(
-      `SELECT vi.*, COUNT(vig.grn_id) as grn_count 
+      `SELECT vi.*, 
+              COUNT(DISTINCT vig.grn_id) as grn_count, 
+              GROUP_CONCAT(DISTINCT vig.grn_id) as grn_ids,
+              GROUP_CONCAT(DISTINCT g.grn_number) as grn_numbers,
+              GROUP_CONCAT(DISTINCT p.name) as project_names,
+              COUNT(DISTINCT gi.id) as item_count
        FROM vendor_invoices vi
        LEFT JOIN vendor_invoice_grns vig ON vi.id = vig.vendor_invoice_id
+       LEFT JOIN grns g ON vig.grn_id = g.id
+       LEFT JOIN projects p ON g.projectId = p.id
+       LEFT JOIN grn_items gi ON g.id = gi.grn_id
        WHERE vi.is_deleted = FALSE
        GROUP BY vi.id
        ORDER BY vi.createdAt DESC`
@@ -7237,20 +7537,16 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       throw new Error(`GRN is already linked to another active invoice (Invoice: ${existingLinks[0].invoice_number}).`);
     }
 
-    // Calculate reference amount
-    const reference_amount = grns.reduce((sum: number, g: any) => sum + (parseFloat(g.finalAmount) || parseFloat(g.total_amount) || 0), 0);
-    const variance = parseFloat(invoice_amount) - reference_amount;
-
     const createdBy = (req as any).user?.name || (req as any).user?.email || 'System';
 
-    // Insert Invoice
+    // Insert Invoice with status = 'DRAFT'
     const [insertResult]: any = await connection.execute(
       `INSERT INTO vendor_invoices (
         vendor_id, invoice_number, invoice_date, remarks, reference_amount, invoice_amount, variance, status,
         vendor_name_snapshot, vendor_gst_snapshot, vendor_address_snapshot, created_by, is_deleted
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, FALSE)`,
+      ) VALUES (?, ?, ?, ?, 0.00, ?, 0.00, 'DRAFT', ?, ?, ?, ?, FALSE)`,
       [
-        vendor_id, invoice_number, invoice_date, remarks || '', reference_amount, invoice_amount, variance,
+        vendor_id, invoice_number, invoice_date, remarks || '', invoice_amount,
         vendor.vendor_name, vendor.gst_number || null, vendor.address || null, createdBy
       ]
     );
@@ -7265,8 +7561,51 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       );
     }
 
+    // Fetch grn_items and create line items dynamically in vendor_invoice_items
+    const [grnItems]: any = await connection.query(
+      'SELECT id, quantity, rate, item_name FROM grn_items WHERE grn_id IN (?)',
+      [grn_ids]
+    );
+
+    let calculatedRefAmount = 0;
+
+    for (const grnItem of grnItems) {
+      // Get already-billed quantity
+      const [billed]: any = await connection.query(
+        `SELECT SUM(vii.billed_quantity) as total_billed 
+         FROM vendor_invoice_items vii
+         JOIN vendor_invoices vi ON vii.vendor_invoice_id = vi.id
+         WHERE vii.grn_item_id = ? AND vi.is_deleted = FALSE`,
+        [grnItem.id]
+      );
+
+      const totalBilled = parseFloat(billed[0].total_billed || '0');
+      const grnQty = parseFloat(grnItem.quantity);
+      const remainingQty = Math.max(0, grnQty - totalBilled);
+
+      if (remainingQty > 0) {
+        const lineRate = parseFloat(grnItem.rate);
+        const lineTotal = remainingQty * lineRate;
+        calculatedRefAmount += lineTotal;
+
+        await connection.execute(
+          `INSERT INTO vendor_invoice_items (
+            vendor_invoice_id, grn_item_id, billed_quantity, confirmed_rate, gst_amount, discount_amount, line_total
+          ) VALUES (?, ?, ?, ?, 0.00, 0.00, ?)`,
+          [invoiceId, grnItem.id, remainingQty, lineRate, lineTotal]
+        );
+      }
+    }
+
+    // Update Invoice header reference_amount and variance
+    const variance = parseFloat(invoice_amount) - calculatedRefAmount;
+    await connection.execute(
+      'UPDATE vendor_invoices SET reference_amount = ?, variance = ? WHERE id = ?',
+      [calculatedRefAmount, variance, invoiceId]
+    );
+
     await connection.commit();
-    res.status(201).json({ id: invoiceId, message: 'Vendor Invoice created successfully.' });
+    res.status(201).json({ id: invoiceId, message: 'Draft Vendor Invoice created successfully.' });
   } catch (error: any) {
     if (connection) await connection.rollback();
     console.error('Error creating vendor invoice:', error);
@@ -7276,9 +7615,602 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
   }
 });
 
+api.get('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'view'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [invoices]: any = await pool.query(
+      `SELECT vi.*, v.vendor_name, v.gst_number, v.address 
+       FROM vendor_invoices vi 
+       JOIN vendors v ON vi.vendor_id = v.id 
+       WHERE vi.id = ? AND vi.is_deleted = FALSE`,
+      [id]
+    );
+
+    if (invoices.length === 0) {
+      return res.status(404).json({ error: 'Vendor Invoice not found' });
+    }
+
+    const invoice = invoices[0];
+
+    // Fetch linked GRN IDs
+    const [grnLinks]: any = await pool.query(
+      `SELECT grn_id FROM vendor_invoice_grns WHERE vendor_invoice_id = ?`,
+      [id]
+    );
+    const grnIds = grnLinks.map((g: any) => g.grn_id);
+
+    // Fetch line items (unit comes from inventory table, not grn_items)
+    const [items]: any = await pool.query(
+      `SELECT vii.*, gi.item_name, gi.rate as estimated_rate, i.unit
+       FROM vendor_invoice_items vii
+       JOIN grn_items gi ON vii.grn_item_id = gi.id
+       LEFT JOIN inventory i ON gi.inventory_id = i.id
+       WHERE vii.vendor_invoice_id = ?`,
+      [id]
+    );
+
+    res.status(200).json({
+      ...invoice,
+      grn_ids: grnIds,
+      line_items: items
+    });
+  } catch (error: any) {
+    console.error('Error fetching detailed invoice:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), async (req, res) => {
+  const { id } = req.params;
+  const { invoice_date, remarks, invoice_amount, line_items } = req.body;
+
+  if (!invoice_date || invoice_amount === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // 1. Fetch original invoice and check status
+    const [invoices]: any = await connection.execute(
+      'SELECT status, is_deleted FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
+      [id]
+    );
+    if (invoices.length === 0) {
+      throw new AppError('NOT_FOUND', 'Vendor Invoice not found.', 404);
+    }
+    if (invoices[0].status !== 'DRAFT') {
+      throw new AppError('BUSINESS_RULE_ERROR', 'Only invoices in DRAFT status can be modified.', 422);
+    }
+
+    // 2. Update lines if provided
+    if (line_items && Array.isArray(line_items)) {
+      for (const line of line_items) {
+        const { id: lineItemId, billed_quantity, confirmed_rate, gst_amount, discount_amount } = line;
+        
+        // Fetch existing line details to get grn_item_id
+        const [existingLine]: any = await connection.execute(
+          'SELECT grn_item_id FROM vendor_invoice_items WHERE id = ? AND vendor_invoice_id = ?',
+          [lineItemId, id]
+        );
+        if (existingLine.length === 0) {
+          throw new AppError('NOT_FOUND', `Line item ID ${lineItemId} not found on this invoice.`, 404);
+        }
+        const grnItemId = existingLine[0].grn_item_id;
+
+        // Validate quantity caps
+        await InvoiceValidator.validateQuantityCaps(connection, grnItemId, parseFloat(billed_quantity), lineItemId);
+
+        // Update line item details
+        const gst = parseFloat(gst_amount || '0');
+        const disc = parseFloat(discount_amount || '0');
+        const rate = parseFloat(confirmed_rate);
+        const qty = parseFloat(billed_quantity);
+        const lineTotal = (qty * rate) + gst - disc;
+
+        await connection.execute(
+          `UPDATE vendor_invoice_items 
+           SET billed_quantity = ?, confirmed_rate = ?, gst_amount = ?, discount_amount = ?, line_total = ?
+           WHERE id = ?`,
+          [qty, rate, gst, disc, lineTotal, lineItemId]
+        );
+      }
+    }
+
+    // 3. Recalculate variance
+    const [updatedLines]: any = await connection.execute(
+      'SELECT line_total FROM vendor_invoice_items WHERE vendor_invoice_id = ?',
+      [id]
+    );
+    const calculatedRefAmount = updatedLines.reduce((sum: number, l: any) => sum + parseFloat(l.line_total), 0);
+    const variance = parseFloat(invoice_amount) - calculatedRefAmount;
+
+    // 4. Update Header
+    await connection.execute(
+      `UPDATE vendor_invoices 
+       SET invoice_date = ?, remarks = ?, reference_amount = ?, invoice_amount = ?, variance = ?
+       WHERE id = ?`,
+      [invoice_date, remarks || '', calculatedRefAmount, invoice_amount, variance, id]
+    );
+
+    await connection.commit();
+    res.status(200).json({ message: 'Vendor Invoice updated successfully.' });
+  } catch (error: any) {
+    if (connection) await connection.rollback();
+    console.error('Error updating vendor invoice:', error);
+    handleApiError(res, error);
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+api.post('/vendor-invoices/:id/confirm', authorizeAction('vendor_invoices', 'approve'), async (req, res) => {
+  const { id } = req.params;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // 1. Pre-validation checks
+    const [invoices]: any = await connection.execute(
+      'SELECT * FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
+      [id]
+    );
+    if (invoices.length === 0) {
+      throw new AppError('NOT_FOUND', 'Vendor Invoice not found.', 404);
+    }
+
+    const invoice = invoices[0];
+    if (invoice.status !== 'DRAFT') {
+      throw new AppError('BUSINESS_RULE_ERROR', 'Only invoices in DRAFT status can be confirmed.', 422);
+    }
+
+    // 2. Validate linked line items exist
+    const [lineItems]: any = await connection.execute(
+      'SELECT id, grn_item_id, billed_quantity FROM vendor_invoice_items WHERE vendor_invoice_id = ?',
+      [id]
+    );
+    if (lineItems.length === 0) {
+      throw new AppError('BUSINESS_RULE_ERROR', 'Vendor Invoice must contain at least one line item.', 422);
+    }
+
+    // 3. Vendor and quantity cap validations
+    const [grnLinks]: any = await connection.execute(
+      'SELECT grn_id FROM vendor_invoice_grns WHERE vendor_invoice_id = ?',
+      [id]
+    );
+    const grnIds = grnLinks.map((g: any) => g.grn_id);
+    await InvoiceValidator.validateVendorMatch(connection, invoice.vendor_id, grnIds);
+
+    for (const line of lineItems) {
+      await InvoiceValidator.validateQuantityCaps(connection, line.grn_item_id, parseFloat(line.billed_quantity), line.id);
+    }
+
+    const confirmedBy = (req as any).user?.name || (req as any).user?.email || 'System';
+
+    // 4. Update status and confirm details
+    await connection.execute(
+      `UPDATE vendor_invoices 
+       SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP 
+       WHERE id = ?`,
+      [confirmedBy, id]
+    );
+
+    // 5. Audit log entry
+    await connection.query(
+      'INSERT INTO audit_logs (actor, action, details) VALUES (?, ?, ?)',
+      [confirmedBy, 'CONFIRM_INVOICE', JSON.stringify({ invoice_id: id, previous_status: 'DRAFT', new_status: 'CONFIRMED' })]
+    );
+
+    await connection.commit();
+    res.status(200).json({ success: true, message: 'Vendor Invoice confirmed successfully.' });
+  } catch (error: any) {
+    if (connection) await connection.rollback();
+    console.error('Error confirming vendor invoice:', error);
+    handleApiError(res, error);
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+api.post('/vendor-invoices/:id/finalize', authorizeAction('vendor_invoices', 'approve'), async (req, res) => {
+  const { id } = req.params;
+  const connection = await pool.getConnection();
+  const actor = (req as any).user?.name || (req as any).user?.email || 'System';
+  try {
+    await connection.beginTransaction();
+
+    // 1. Validate invoice status
+    const [invoices]: any = await connection.execute(
+      'SELECT * FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
+      [id]
+    );
+    if (invoices.length === 0) {
+      throw new AppError('NOT_FOUND', 'Vendor Invoice not found.', 404);
+    }
+
+    const invoice = invoices[0];
+    if (invoice.status !== 'CONFIRMED') {
+      throw new AppError('BUSINESS_RULE_ERROR', 'Only invoices in CONFIRMED status can be finalized.', 422);
+    }
+
+    // 2. Fetch invoice items
+    const [invoiceItems]: any = await connection.execute(
+      `SELECT vii.*, gi.inventory_id, gi.item_name, gi.rate as estimated_rate, gi.grn_id, g.grn_number, i.unit
+       FROM vendor_invoice_items vii
+       JOIN grn_items gi ON vii.grn_item_id = gi.id
+       JOIN grns g ON gi.grn_id = g.id
+       JOIN inventory i ON gi.inventory_id = i.id
+       WHERE vii.vendor_invoice_id = ?`,
+      [id]
+    );
+
+    if (invoiceItems.length === 0) {
+      throw new AppError('BUSINESS_RULE_ERROR', 'Vendor Invoice contains no line items.', 422);
+    }
+
+    const auditChanges: any[] = [];
+    const affectedInventoryIds = new Set<number>();
+    const inventoryValuationChanges: any[] = [];
+    const materialIssueUpdates: any[] = [];
+    const projectCostChangesSummary = new Map<number, { projectId: number, projectName: string, totalVariance: number, status: string }>();
+    const affectedVoucherIds = new Set<number>();
+    const projectAdjVouchers = new Map<number, number>(); // projectId -> voucherId
+    let totalFinancialVariance = 0;
+
+    // 3. Process each line item
+    for (const item of invoiceItems) {
+      const confirmedRate = parseFloat(item.confirmed_rate);
+      const estimatedRate = parseFloat(item.estimated_rate);
+      const variance = confirmedRate - estimatedRate;
+      const totalVariance = parseFloat(item.billed_quantity) * variance;
+      totalFinancialVariance += totalVariance;
+
+      // A. Update grn_items rate fields (Only confirmed_rate and status change, physical fields remain untouched)
+      await connection.execute(
+        `UPDATE grn_items 
+         SET confirmed_rate = ?, rate_status = 'CONFIRMED' 
+         WHERE id = ?`,
+        [confirmedRate, item.grn_item_id]
+      );
+
+      // B. Update inventory_batches financial fields (confirmed_unit_price, confirmed_value_received, total_value_remaining)
+      const [batches]: any = await connection.execute(
+        `SELECT id, quantity_received, quantity_remaining 
+         FROM inventory_batches 
+         WHERE grn_id = ? AND inventory_id = ? AND is_void = FALSE FOR UPDATE`,
+        [item.grn_id, item.inventory_id]
+      );
+
+      for (const batch of batches) {
+        const qtyReceived = parseFloat(batch.quantity_received);
+        const qtyRemaining = parseFloat(batch.quantity_remaining);
+        const valueReceived = qtyReceived * confirmedRate;
+        const valueRemaining = qtyRemaining * confirmedRate;
+
+        await connection.execute(
+          `UPDATE inventory_batches 
+           SET confirmed_unit_price = ?, confirmed_value_received = ?, total_value_remaining = ?
+           WHERE id = ?`,
+          [confirmedRate, valueReceived, valueRemaining, batch.id]
+        );
+      }
+
+      // C. Material Issue Revaluation
+      // Fetch active material issue items consumed from this GRN batch/layer
+      const [issueItems]: any = await connection.execute(
+        `SELECT mii.*, miv.project_id, p.status as project_status, p.name as project_name
+         FROM material_issue_items mii
+         JOIN material_issue_vouchers miv ON mii.voucher_id = miv.id
+         JOIN projects p ON miv.project_id = p.id
+         WHERE mii.grn_id = ? AND mii.inventory_id = ? AND mii.is_deleted = FALSE AND mii.revert_status = 'ACTIVE' AND miv.is_deleted = FALSE FOR UPDATE`,
+        [item.grn_id, item.inventory_id]
+      );
+
+      for (const mii of issueItems) {
+        const miiQty = parseFloat(mii.quantity);
+        const previousCost = parseFloat(mii.total_cost);
+        const confirmedCost = miiQty * confirmedRate;
+        const itemVarianceTotal = confirmedCost - previousCost;
+
+        if (itemVarianceTotal !== 0) {
+          if (mii.project_status === 'CLOSED') {
+            // Compensating adjustment strategy: Do not modify historical issue record.
+            // Write compensating financial variance entry (quantity 0.00) in current open period.
+            let adjVoucherId = projectAdjVouchers.get(mii.project_id);
+            if (!adjVoucherId) {
+              const adjVoucherNo = await generateVoucherNumber(connection);
+              const [adjVResult]: any = await connection.execute(
+                `INSERT INTO material_issue_vouchers (voucher_no, project_id, issued_to, issued_by, issue_date, purpose, remarks, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+                [
+                  adjVoucherNo,
+                  mii.project_id,
+                  'Accounts / Revaluation',
+                  actor,
+                  new Date().toISOString().split('T')[0],
+                  'Prior Period Cost Adjustment - Revaluation',
+                  `Compensating adjustment for finalized Invoice ID: ${id}`
+                ]
+              );
+              adjVoucherId = adjVResult.insertId;
+              projectAdjVouchers.set(mii.project_id, adjVoucherId);
+            }
+
+            // Insert compensating item into material_issue_items
+            await connection.execute(
+              `INSERT INTO material_issue_items (
+                voucher_id, inventory_id, item_name, quantity, unit, total_cost, 
+                estimated_unit_cost, confirmed_unit_cost, estimated_total_cost, confirmed_total_cost,
+                batch_details, grn_id, grn_number
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                adjVoucherId,
+                mii.inventory_id,
+                `${mii.item_name} (Adjustment)`,
+                0.00,
+                mii.unit,
+                itemVarianceTotal,
+                0.00,
+                confirmedRate,
+                0.00,
+                itemVarianceTotal,
+                JSON.stringify([]),
+                mii.grn_id,
+                mii.grn_number
+              ]
+            );
+
+            // Also insert compensating entry into legacy material_issues table
+            await connection.execute(
+              `INSERT INTO material_issues (
+                inventory_id, item_name, quantity_issued, total_cost, batch_details,
+                project_id, project_name, issued_to, issued_by, issue_date,
+                remarks, issue_source, grn_id, grn_number
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FIFO_ISSUE', ?, ?)`,
+              [
+                mii.inventory_id,
+                `${mii.item_name} (Adjustment)`,
+                0.00,
+                itemVarianceTotal,
+                JSON.stringify([]),
+                mii.project_id,
+                mii.project_name,
+                'Accounts / Revaluation',
+                actor,
+                new Date().toISOString().split('T')[0],
+                `Compensating adjustment for finalized Invoice ID: ${id}`,
+                mii.grn_id,
+                mii.grn_number
+              ]
+            );
+          } else {
+            // Direct revaluation of the historical issue record
+            await connection.execute(
+              `UPDATE material_issue_items
+               SET confirmed_unit_cost = ?,
+                   confirmed_total_cost = ?,
+                   total_cost = ?
+               WHERE id = ?`,
+              [confirmedRate, confirmedCost, confirmedCost, mii.id]
+            );
+
+            // Also update legacy material_issues table directly
+            const [legacyIssues]: any = await connection.execute(
+              `SELECT * FROM material_issues
+               WHERE grn_id = ? AND inventory_id = ? AND project_id = ? AND is_deleted = FALSE AND revert_status = 'ACTIVE'`,
+              [item.grn_id, item.inventory_id, mii.project_id]
+            );
+            for (const li of legacyIssues) {
+              const liConfirmedTotalCost = parseFloat(li.quantity_issued) * confirmedRate;
+              await connection.execute(
+                `UPDATE material_issues
+                 SET total_cost = ?
+                 WHERE id = ?`,
+                [liConfirmedTotalCost, li.id]
+              );
+            }
+
+            affectedVoucherIds.add(mii.voucher_id);
+          }
+
+          // Create a financial event (PROJECT_COST_ADJUSTMENT) for audit trail
+          await connection.execute(
+            'INSERT INTO audit_logs (actor, action, details) VALUES (?, ?, ?)',
+            [
+              actor,
+              'PROJECT_COST_ADJUSTMENT',
+              JSON.stringify({
+                project_id: mii.project_id,
+                project_name: mii.project_name,
+                invoice_id: id,
+                invoice_number: invoice.invoice_number,
+                inventory_id: mii.inventory_id,
+                material_name: mii.item_name,
+                previous_cost: previousCost,
+                confirmed_cost: confirmedCost,
+                variance: itemVarianceTotal,
+                timestamp: new Date().toISOString(),
+                user: actor,
+                is_compensating: mii.project_status === 'CLOSED'
+              })
+            ]
+          );
+
+          materialIssueUpdates.push({
+            issue_item_id: mii.id,
+            voucher_id: mii.voucher_id,
+            inventory_id: mii.inventory_id,
+            item_name: mii.item_name,
+            project_id: mii.project_id,
+            project_name: mii.project_name,
+            quantity: miiQty,
+            previous_cost: previousCost,
+            confirmed_cost: confirmedCost,
+            variance: itemVarianceTotal,
+            status: mii.project_status,
+            adjustment_type: mii.project_status === 'CLOSED' ? 'COMPENSATING' : 'DIRECT'
+          });
+
+          // Update projectCostChangesSummary
+          const currentSummary = projectCostChangesSummary.get(mii.project_id) || {
+            projectId: mii.project_id,
+            projectName: mii.project_name,
+            totalVariance: 0,
+            status: mii.project_status
+          };
+          currentSummary.totalVariance += itemVarianceTotal;
+          projectCostChangesSummary.set(mii.project_id, currentSummary);
+        }
+      }
+
+      // Track unique affected inventory items for MAP recalculation
+      affectedInventoryIds.add(item.inventory_id);
+
+      // Append to audit details
+      auditChanges.push({
+        item_id: item.inventory_id,
+        item_name: item.item_name,
+        grn_item_id: item.grn_item_id,
+        original_estimated_rate: estimatedRate,
+        confirmed_rate: confirmedRate,
+        variance_per_unit: variance,
+        total_variance: totalVariance
+      });
+    }
+
+    // 4. Update Inventory MAP Valuation
+    for (const inventoryId of affectedInventoryIds) {
+      // Get previous inventory values for expanded audit log
+      const [prevInv]: any = await connection.execute(
+        'SELECT price_per_unit, total_value, item_name FROM inventory WHERE id = ?',
+        [inventoryId]
+      );
+      const prevMap = parseFloat(prevInv[0].price_per_unit || '0');
+      const prevTotalVal = parseFloat(prevInv[0].total_value || '0');
+      const itemName = prevInv[0].item_name;
+
+      // Fetch active batches for this inventory item
+      const [activeBatches]: any = await connection.execute(
+        `SELECT SUM(quantity_remaining) as total_qty, SUM(total_value_remaining) as total_val 
+         FROM inventory_batches 
+         WHERE inventory_id = ? AND is_void = FALSE`,
+        [inventoryId]
+      );
+
+      if (activeBatches.length > 0) {
+        const totalQty = parseFloat(activeBatches[0].total_qty || '0');
+        const totalVal = parseFloat(activeBatches[0].total_val || '0');
+        const newMap = totalQty > 0 ? (totalVal / totalQty) : 0;
+
+        await connection.execute(
+          `UPDATE inventory 
+           SET price_per_unit = ?, total_value = ? 
+           WHERE id = ?`,
+          [newMap, totalVal, inventoryId]
+        );
+        console.log(`[FinancialFinalization] Revalued Inventory ID ${inventoryId}: New MAP = ${newMap}, Total Val = ${totalVal}`);
+
+        inventoryValuationChanges.push({
+          inventory_id: inventoryId,
+          item_name: itemName,
+          previous_map: prevMap,
+          new_map: newMap,
+          previous_total_value: prevTotalVal,
+          new_total_value: totalVal
+        });
+      }
+    }
+
+    // 4b. Recalculate total valuation of directly modified issue vouchers
+    for (const voucherId of affectedVoucherIds) {
+      const [voucherSum]: any = await connection.execute(
+        `SELECT SUM(total_cost) as total_val, COUNT(*) as total_items
+         FROM material_issue_items
+         WHERE voucher_id = ? AND is_deleted = FALSE AND revert_status = 'ACTIVE'`,
+        [voucherId]
+      );
+      const newTotalValuation = parseFloat(voucherSum[0].total_val || '0');
+      const newTotalItems = parseInt(voucherSum[0].total_items || '0');
+      await connection.execute(
+        `UPDATE material_issue_vouchers
+         SET total_valuation = ?, total_items = ?
+         WHERE id = ?`,
+        [newTotalValuation, newTotalItems, voucherId]
+      );
+    }
+
+    // 4c. Recalculate total valuation of newly created compensating adjustment vouchers
+    for (const [projectId, adjVoucherId] of projectAdjVouchers.entries()) {
+      const [voucherSum]: any = await connection.execute(
+        `SELECT SUM(total_cost) as total_val, COUNT(*) as total_items
+         FROM material_issue_items
+         WHERE voucher_id = ? AND is_deleted = FALSE AND revert_status = 'ACTIVE'`,
+        [adjVoucherId]
+      );
+      const newTotalValuation = parseFloat(voucherSum[0].total_val || '0');
+      const newTotalItems = parseInt(voucherSum[0].total_items || '0');
+      await connection.execute(
+        `UPDATE material_issue_vouchers
+         SET total_valuation = ?, total_items = ?
+         WHERE id = ?`,
+        [newTotalValuation, newTotalItems, adjVoucherId]
+      );
+    }
+
+    // 5. Update invoice status to FINALIZED
+    await connection.execute(
+      `UPDATE vendor_invoices 
+       SET status = 'FINALIZED', updatedAt = CURRENT_TIMESTAMP 
+       WHERE id = ?`,
+      [id]
+    );
+
+    const projectCostAdjustmentsList = Array.from(projectCostChangesSummary.values());
+
+    // 6. Record detailed audit log entry
+    await connection.query(
+      'INSERT INTO audit_logs (actor, action, details) VALUES (?, ?, ?)',
+      [
+        actor, 
+        'FINANCIAL_FINALIZATION', 
+        JSON.stringify({ 
+          invoice_id: id, 
+          invoice_number: invoice.invoice_number, 
+          total_financial_variance: totalFinancialVariance,
+          changes: auditChanges,
+          inventory_valuation_changes: inventoryValuationChanges,
+          material_issue_updates: materialIssueUpdates,
+          project_cost_adjustments: projectCostAdjustmentsList
+        })
+      ]
+    );
+
+    await connection.commit();
+    res.status(200).json({ success: true, message: 'Vendor Invoice finalized and revalued successfully.' });
+  } catch (error: any) {
+    if (connection) await connection.rollback();
+    console.error('Error during finalization revaluation:', error);
+    handleApiError(res, error);
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 api.delete('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'delete'), async (req, res) => {
   const { id } = req.params;
   try {
+    const [rows]: any = await pool.execute(
+      'SELECT status FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE',
+      [id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    if (rows[0].status !== 'DRAFT') {
+      return res.status(400).json({ error: 'Only invoices in DRAFT status can be deleted.' });
+    }
+
     const [result]: any = await pool.execute(
       'UPDATE vendor_invoices SET is_deleted = TRUE WHERE id = ?',
       [id]
