@@ -363,11 +363,20 @@ async function isGrnUsed(connection: mysql.PoolConnection | mysql.Pool, grnId: s
  * Recalculates and synchronizes master inventory totals from active batches.
  */
 async function syncInventoryFromBatches(connection: mysql.PoolConnection, inventoryId: string | number): Promise<void> {
+  // Stage 5 Fix: Always recompute price_per_unit (MAP) from batch aggregates to keep it
+  // consistent with quantity and total_value. Without this, MAP drifts whenever issues
+  // or receipts update quantity/total_value but leave price_per_unit stale.
   await connection.execute(`
     UPDATE inventory i
     SET 
       quantity = COALESCE((SELECT SUM(quantity_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 0),
-      total_value = COALESCE((SELECT SUM(total_value_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 0)
+      total_value = COALESCE((SELECT SUM(total_value_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 0),
+      price_per_unit = CASE
+        WHEN COALESCE((SELECT SUM(quantity_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 0) > 0
+        THEN COALESCE((SELECT SUM(total_value_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 0)
+             / COALESCE((SELECT SUM(quantity_remaining) FROM inventory_batches WHERE inventory_id = i.id AND is_void = FALSE), 1)
+        ELSE price_per_unit
+      END
     WHERE id = ?
   `, [inventoryId]);
 }
@@ -2221,6 +2230,28 @@ async function initDB() {
       )
     `);
 
+    // Check and migrate legacy schema if present
+    const [auditCols]: any = await poolConnection.query("SHOW COLUMNS FROM procurement_audit_logs");
+    const auditColNames = auditCols.map((c: any) => c.Field);
+    if (auditColNames.includes('entity_type')) {
+      console.log('🔄 Legacy schema detected in procurement_audit_logs. Migrating to new schema...');
+      try {
+        await poolConnection.query(`
+          ALTER TABLE procurement_audit_logs 
+            CHANGE COLUMN entity_type document_type ENUM('PR', 'PO', 'WO') NOT NULL,
+            CHANGE COLUMN entity_id document_id INT NOT NULL,
+            CHANGE COLUMN action action_type VARCHAR(100) NOT NULL,
+            CHANGE COLUMN performed_by actor_name VARCHAR(255) NOT NULL,
+            CHANGE COLUMN role actor_role VARCHAR(50) NOT NULL,
+            CHANGE COLUMN remarks action_details TEXT,
+            CHANGE COLUMN createdAt timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        `);
+        console.log('✅ procurement_audit_logs table migrated successfully!');
+      } catch (e: any) {
+        console.error('❌ Failed to migrate procurement_audit_logs:', e.message);
+      }
+    }
+
     // 🛡️ Performance Indexes for Procurement
     await poolConnection.query(`
       CREATE TABLE IF NOT EXISTS status_history (
@@ -4037,17 +4068,55 @@ api.post('/inventory/voucher', authorizeAction('inventory', 'create'), async (re
           [take, cost, batch.id]
         );
 
+        // Stage 6 Fix (Bug 3): When issuing from a GRN whose invoice has already been
+        // FINALIZED (rate_status = 'CONFIRMED'), pre-fill confirmed_unit_cost and
+        // confirmed_total_cost immediately. Otherwise finalization has already run and
+        // will never revisit this newly-created record.
+        let grnConfirmedRate: number | null = null;
+        let grnRateStatus: string = 'ESTIMATED';
+        if (batch.grn_id) {
+          const [grnItemRow]: any = await connection.execute(
+            `SELECT gi.confirmed_rate, gi.rate_status
+             FROM grn_items gi
+             WHERE gi.grn_id = ? AND gi.inventory_id = ?
+             LIMIT 1`,
+            [batch.grn_id, inventory_id]
+          );
+          if (grnItemRow.length > 0) {
+            grnRateStatus = grnItemRow[0].rate_status;
+            grnConfirmedRate = grnItemRow[0].rate_status === 'CONFIRMED'
+              ? parseFloat(grnItemRow[0].confirmed_rate)
+              : null;
+          }
+        }
+        const estimatedUnitCost = parseFloat(batch.unit_price);
+        const estimatedTotalCost = cost;
+
+        // Approved Design B Business Rule:
+        // If the source GRN has already been financially finalized, use the confirmed rate.
+        // Otherwise, initialize confirmed_unit_cost & confirmed_total_cost using the estimated values.
+        // The Financial Truth engine will later overwrite these with actual values during finalization.
+        const confirmedUnitCost = grnConfirmedRate !== null ? grnConfirmedRate : estimatedUnitCost;
+        const confirmedTotalCost = grnConfirmedRate !== null ? (take * grnConfirmedRate) : estimatedTotalCost;
+
         // Create Line Item entry for this batch layer (GRN Traceability)
         await connection.execute(
-          `INSERT INTO material_issue_items (voucher_id, inventory_id, item_name, quantity, unit, total_cost, batch_details, grn_id, grn_number)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO material_issue_items (
+             voucher_id, inventory_id, item_name, quantity, unit, total_cost,
+             estimated_unit_cost, confirmed_unit_cost, estimated_total_cost, confirmed_total_cost,
+             batch_details, grn_id, grn_number
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            voucherId, 
-            inventory_id, 
-            invItem.item_name, 
-            take, 
-            invItem.unit, 
-            cost, 
+            voucherId,
+            inventory_id,
+            invItem.item_name,
+            take,
+            invItem.unit,
+            cost,
+            estimatedUnitCost,
+            confirmedUnitCost,
+            estimatedTotalCost,
+            confirmedTotalCost,
             JSON.stringify([{ ...batch, quantity: take, cost: cost }]),
             batch.grn_id,
             batch.batch_number
@@ -5668,9 +5737,28 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
 
     // 5. Get paginated data
     const dataQuery = `
-      SELECT g.*, p.name as projectName 
+      SELECT 
+        g.*, 
+        p.name as projectName,
+        vi.invoice_number,
+        vi.status as invoice_status,
+        vi.updatedAt as finalized_at,
+        COALESCE(gi_sum.confirmed_subtotal, g.total_amount) as confirmed_total_amount,
+        COALESCE(gi_sum.estimated_subtotal, g.total_amount) as estimated_total_amount,
+        COALESCE(gi_sum.grn_variance, 0) as grn_variance
       FROM grns g 
       LEFT JOIN projects p ON g.projectId = p.id 
+      LEFT JOIN (
+        SELECT 
+          gi.grn_id, 
+          SUM(COALESCE(gi.confirmed_rate, gi.rate) * gi.quantity) as confirmed_subtotal,
+          SUM(gi.rate * gi.quantity) as estimated_subtotal,
+          SUM((COALESCE(gi.confirmed_rate, gi.rate) - gi.rate) * gi.quantity) as grn_variance
+        FROM grn_items gi
+        GROUP BY gi.grn_id
+      ) gi_sum ON g.id = gi_sum.grn_id
+      LEFT JOIN vendor_invoice_grns vig ON g.id = vig.grn_id
+      LEFT JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id AND vi.is_deleted = FALSE
       ${baseFilter}${statusFilter}
       ORDER BY g.createdAt DESC 
       LIMIT ${parseInt(String(l), 10)} OFFSET ${parseInt(String(offset), 10)}
@@ -5678,8 +5766,31 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
     const dataParams = [...baseParams, ...statusParams];
     const [rows]: any = await pool.query(dataQuery, dataParams);
 
+    const processedRows = (rows || []).map((grn: any) => {
+      const financial_status = grn.invoice_status === 'FINALIZED' ? 'FINALIZED' : 'ESTIMATED';
+      const subtotal = financial_status === 'FINALIZED'
+        ? (parseFloat(grn.confirmed_total_amount || grn.total_amount) || 0)
+        : (parseFloat(grn.estimated_total_amount || grn.total_amount) || 0);
+      const discountValue = parseFloat(grn.discountValue) || 0;
+      const discountAmount = grn.discountType === 'PERCENTAGE'
+        ? (subtotal * discountValue / 100)
+        : discountValue;
+      const transport = parseFloat(grn.transportCharges) || 0;
+      const other = parseFloat(grn.otherCharges) || 0;
+      return {
+        ...grn,
+        financial_status,
+        invoice_number: grn.invoice_number || null,
+        invoice_status: grn.invoice_status || null,
+        confirmed_at: grn.invoice_status === 'FINALIZED' ? grn.finalized_at : null,
+        variance: parseFloat(grn.grn_variance || 0),
+        total_amount: subtotal,
+        finalAmount: subtotal - discountAmount + transport + other
+      };
+    });
+
     res.status(200).json({
-      data: rows || [],
+      data: processedRows,
       total,
       stats,
       page: p,
@@ -5722,16 +5833,51 @@ api.get('/grns/:id', authorizeAction('grn', 'view'), async (req, res) => {
   const { id } = req.params;
   try {
     const [grnRows]: any = await pool.execute(`
-      SELECT g.*, p.name as projectName 
+      SELECT 
+        g.*, 
+        p.name as projectName,
+        vi.invoice_number,
+        vi.status as invoice_status,
+        vi.updatedAt as finalized_at,
+        COALESCE(gi_sum.confirmed_subtotal, g.total_amount) as confirmed_total_amount,
+        COALESCE(gi_sum.estimated_subtotal, g.total_amount) as estimated_total_amount,
+        COALESCE(gi_sum.grn_variance, 0) as grn_variance
       FROM grns g 
       LEFT JOIN projects p ON g.projectId = p.id 
+      LEFT JOIN (
+        SELECT 
+          gi.grn_id, 
+          SUM(COALESCE(gi.confirmed_rate, gi.rate) * gi.quantity) as confirmed_subtotal,
+          SUM(gi.rate * gi.quantity) as estimated_subtotal,
+          SUM((COALESCE(gi.confirmed_rate, gi.rate) - gi.rate) * gi.quantity) as grn_variance
+        FROM grn_items gi
+        WHERE gi.grn_id = ?
+        GROUP BY gi.grn_id
+      ) gi_sum ON g.id = gi_sum.grn_id
+      LEFT JOIN vendor_invoice_grns vig ON g.id = vig.grn_id
+      LEFT JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id AND vi.is_deleted = FALSE
       WHERE g.id = ? AND g.is_deleted = FALSE
-    `, [id]);
+    `, [id, id]);
 
     if (grnRows.length === 0) return res.status(404).json({ error: 'GRN not found' });
 
     const [itemRows]: any = await pool.execute(`
-      SELECT gi.*, inv.unit, inv.category, COALESCE(pi.gst_percent, 0) as gst_percent
+      SELECT 
+        gi.id,
+        gi.grn_id,
+        gi.inventory_id,
+        gi.item_name,
+        gi.quantity,
+        gi.estimated_rate,
+        gi.confirmed_rate,
+        gi.rate_status,
+        gi.rate as estimated_rate_val,
+        gi.total as estimated_total_val,
+        COALESCE(gi.confirmed_rate, gi.rate) as confirmed_rate_val,
+        COALESCE(gi.confirmed_rate * gi.quantity, gi.total) as confirmed_total_val,
+        inv.unit, 
+        inv.category, 
+        COALESCE(pi.gst_percent, 0) as gst_percent
       FROM grn_items gi 
       JOIN inventory inv ON gi.inventory_id = inv.id 
       LEFT JOIN grns g ON gi.grn_id = g.id
@@ -5742,7 +5888,50 @@ api.get('/grns/:id', authorizeAction('grn', 'view'), async (req, res) => {
     // Check if the GRN is used (partially issued)
     const isUsed = await isGrnUsed(pool as any, id);
 
-    res.status(200).json({ ...grnRows[0], items: itemRows, is_used: isUsed });
+    const grn = grnRows[0];
+    const financial_status = grn.invoice_status === 'FINALIZED' ? 'FINALIZED' : 'ESTIMATED';
+
+    const processedItems = itemRows.map((item: any) => {
+      const isFinalized = financial_status === 'FINALIZED';
+      const display_rate = isFinalized 
+        ? parseFloat(item.confirmed_rate_val || item.estimated_rate_val) 
+        : parseFloat(item.estimated_rate_val);
+      const display_amount = isFinalized 
+        ? parseFloat(item.confirmed_total_val || item.estimated_total_val) 
+        : parseFloat(item.estimated_total_val);
+
+      return {
+        ...item,
+        rate: display_rate,
+        total: display_amount,
+        display_rate,
+        display_amount
+      };
+    });
+
+    const subtotal = financial_status === 'FINALIZED'
+      ? (parseFloat(grn.confirmed_total_amount || grn.total_amount) || 0)
+      : (parseFloat(grn.estimated_total_amount || grn.total_amount) || 0);
+
+    const discountValue = parseFloat(grn.discountValue) || 0;
+    const discountAmount = grn.discountType === 'PERCENTAGE'
+      ? (subtotal * discountValue / 100)
+      : discountValue;
+    const transport = parseFloat(grn.transportCharges) || 0;
+    const other = parseFloat(grn.otherCharges) || 0;
+    grn.total_amount = subtotal;
+    grn.finalAmount = subtotal - discountAmount + transport + other;
+
+    res.status(200).json({ 
+      ...grn, 
+      financial_status,
+      invoice_number: grn.invoice_number || null,
+      invoice_status: grn.invoice_status || null,
+      confirmed_at: grn.invoice_status === 'FINALIZED' ? grn.finalized_at : null,
+      variance: parseFloat(grn.grn_variance || 0),
+      items: processedItems, 
+      is_used: isUsed 
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -5752,22 +5941,89 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
   const { id } = req.params;
   try {
     const [grnRows]: any = await pool.execute(`
-      SELECT g.*, p.name as projectName 
+      SELECT 
+        g.*, 
+        p.name as projectName,
+        vi.invoice_number,
+        vi.status as invoice_status,
+        vi.updatedAt as finalized_at,
+        COALESCE(gi_sum.confirmed_subtotal, g.total_amount) as confirmed_total_amount,
+        COALESCE(gi_sum.estimated_subtotal, g.total_amount) as estimated_total_amount,
+        COALESCE(gi_sum.grn_variance, 0) as grn_variance
       FROM grns g 
       LEFT JOIN projects p ON g.projectId = p.id 
+      LEFT JOIN (
+        SELECT 
+          gi.grn_id, 
+          SUM(COALESCE(gi.confirmed_rate, gi.rate) * gi.quantity) as confirmed_subtotal,
+          SUM(gi.rate * gi.quantity) as estimated_subtotal,
+          SUM((COALESCE(gi.confirmed_rate, gi.rate) - gi.rate) * gi.quantity) as grn_variance
+        FROM grn_items gi
+        WHERE gi.grn_id = ?
+        GROUP BY gi.grn_id
+      ) gi_sum ON g.id = gi_sum.grn_id
+      LEFT JOIN vendor_invoice_grns vig ON g.id = vig.grn_id
+      LEFT JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id AND vi.is_deleted = FALSE
       WHERE g.id = ? AND g.is_deleted = FALSE
-    `, [id]);
+    `, [id, id]);
 
     if (grnRows.length === 0) return res.status(404).json({ error: 'GRN not found' });
 
     const [itemRows]: any = await pool.execute(`
-      SELECT gi.*, inv.unit, inv.category 
+      SELECT 
+        gi.id,
+        gi.grn_id,
+        gi.inventory_id,
+        gi.item_name,
+        gi.quantity,
+        gi.estimated_rate,
+        gi.confirmed_rate,
+        gi.rate_status,
+        gi.rate as estimated_rate_val,
+        gi.total as estimated_total_val,
+        COALESCE(gi.confirmed_rate, gi.rate) as confirmed_rate_val,
+        COALESCE(gi.confirmed_rate * gi.quantity, gi.total) as confirmed_total_val,
+        inv.unit, 
+        inv.category 
       FROM grn_items gi 
       JOIN inventory inv ON gi.inventory_id = inv.id 
       WHERE gi.grn_id = ?
     `, [id]);
 
     const grn = grnRows[0];
+    const financial_status = grn.invoice_status === 'FINALIZED' ? 'FINALIZED' : 'ESTIMATED';
+
+    const processedItems = itemRows.map((item: any) => {
+      const isFinalized = financial_status === 'FINALIZED';
+      const display_rate = isFinalized 
+        ? parseFloat(item.confirmed_rate_val || item.estimated_rate_val) 
+        : parseFloat(item.estimated_rate_val);
+      const display_amount = isFinalized 
+        ? parseFloat(item.confirmed_total_val || item.estimated_total_val) 
+        : parseFloat(item.estimated_total_val);
+
+      return {
+        ...item,
+        rate: display_rate,
+        total: display_amount,
+        display_rate,
+        display_amount
+      };
+    });
+
+    const subtotal = financial_status === 'FINALIZED'
+      ? (parseFloat(grn.confirmed_total_amount || grn.total_amount) || 0)
+      : (parseFloat(grn.estimated_total_amount || grn.total_amount) || 0);
+
+    const discountValue = parseFloat(grn.discountValue) || 0;
+    const discountAmount = grn.discountType === 'PERCENTAGE'
+      ? (subtotal * discountValue / 100)
+      : discountValue;
+    const transport = parseFloat(grn.transportCharges) || 0;
+    const other = parseFloat(grn.otherCharges) || 0;
+    grn.total_amount = subtotal;
+    grn.finalAmount = subtotal - discountAmount + transport + other;
+
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -5801,7 +6057,23 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     doc.font('Helvetica-Bold').text('GRN Number: ', 350, infoY, { continued: true }).font('Helvetica').text(grn.grn_number);
     doc.moveDown(0.5);
     doc.font('Helvetica-Bold').text('Receipt Date: ', 350, doc.y, { continued: true }).font('Helvetica').text(new Date(grn.grn_date).toLocaleDateString());
+    doc.moveDown(0.5);
+    doc.font('Helvetica-Bold').text('Financial Status: ', 350, doc.y, { continued: true })
+       .fillColor(financial_status === 'FINALIZED' ? '#16a34a' : '#2563eb')
+       .text(financial_status === 'FINALIZED' ? 'Finalized' : 'Estimated');
     
+    if (financial_status === 'FINALIZED') {
+      doc.moveDown(0.5);
+      doc.font('Helvetica-Bold').fillColor('#000000').text('Vendor Invoice: ', 350, doc.y, { continued: true })
+         .font('Helvetica').text(grn.invoice_number);
+      if (grn.finalized_at) {
+        doc.moveDown(0.5);
+        doc.font('Helvetica-Bold').text('Finalized On: ', 350, doc.y, { continued: true })
+           .font('Helvetica').text(new Date(grn.finalized_at).toLocaleDateString());
+      }
+    }
+    
+    doc.fillColor('#000000'); // Reset color
     doc.moveDown(3);
 
     // Table Setup
@@ -5809,8 +6081,8 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     const col1 = 50;  // Item
     const col2 = 250; // Category
     const col3 = 350; // Qty
-    const col4 = 420; // Rate
-    const col5 = 500; // Total
+    const col4 = 410; // Rate
+    const col5 = 490; // Total
 
     // Table Header Background
     doc.rect(50, tableTop - 5, 495, 20).fill('#f8fafc');
@@ -5818,8 +6090,11 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     doc.text('ITEM NAME', col1, tableTop);
     doc.text('CATEGORY', col2, tableTop);
     doc.text('QTY', col3, tableTop);
-    doc.text('RATE (INR)', col4, tableTop);
-    doc.text('TOTAL (INR)', col5, tableTop);
+    
+    const rateHeader = financial_status === 'FINALIZED' ? 'CONFIRMED RATE' : 'EST. RATE (INR)';
+    const amountHeader = financial_status === 'FINALIZED' ? 'CONFIRMED AMT' : 'EST. AMOUNT (INR)';
+    doc.text(rateHeader, col4, tableTop, { width: 80 });
+    doc.text(amountHeader, col5, tableTop, { width: 80 });
 
     doc.moveTo(50, tableTop + 15).lineTo(545, tableTop + 15).strokeColor('#cbd5e1').stroke();
     
@@ -5827,7 +6102,7 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     let currentY = tableTop + 25;
     doc.fillColor('#000000').font('Helvetica').fontSize(9);
 
-    for (const item of itemRows) {
+    for (const item of processedItems) {
       // Check for page break
       if (currentY > 700) {
         doc.addPage();
@@ -5854,24 +6129,20 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     currentY += 20;
     if (currentY > 700) { doc.addPage(); currentY = 50; }
     
-    const subtotal = parseFloat(grn.total_amount) || 0;
-    const discVal = parseFloat(grn.discountValue) || 0;
-    const discAmt = grn.discountType === 'PERCENTAGE' ? (subtotal * discVal / 100) : discVal;
-    const transport = parseFloat(grn.transportCharges) || 0;
-    const other = parseFloat(grn.otherCharges) || 0;
-    const finalTotal = parseFloat(grn.finalAmount || (subtotal - discAmt + transport + other));
+    const finalTotal = parseFloat(grn.finalAmount || (subtotal - discountAmount + transport + other));
 
     doc.fillColor('#475569');
     
     // Subtotal Row
-    doc.font('Helvetica').fontSize(10).text('Subtotal:', 350, currentY, { width: 100, align: 'right' });
+    const subtotalLabel = financial_status === 'FINALIZED' ? 'Confirmed Subtotal:' : 'Est. Subtotal:';
+    doc.font('Helvetica').fontSize(10).text(subtotalLabel, 350, currentY, { width: 100, align: 'right' });
     doc.font('Helvetica-Bold').text(`INR ${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 450, currentY, { width: 95, align: 'right' });
     
     // Discount Row
-    if (discAmt > 0) {
+    if (discountAmount > 0) {
       currentY += 15;
-      doc.font('Helvetica').fillColor('#ef4444').text(`Discount ${grn.discountType === 'PERCENTAGE' ? `(${discVal}%)` : ''}:`, 350, currentY, { width: 100, align: 'right' });
-      doc.font('Helvetica-Bold').text(`- INR ${discAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 450, currentY, { width: 95, align: 'right' });
+      doc.font('Helvetica').fillColor('#ef4444').text(`Discount ${grn.discountType === 'PERCENTAGE' ? `(${discountValue}%)` : ''}:`, 350, currentY, { width: 100, align: 'right' });
+      doc.font('Helvetica-Bold').text(`- INR ${discountAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 450, currentY, { width: 95, align: 'right' });
     }
 
     // Charges Rows
@@ -5893,7 +6164,8 @@ api.get('/grns/:id/pdf', authorizeAction('grn', 'export'), async (req, res) => {
     
     // Grand Total Row
     currentY += 10;
-    doc.font('Helvetica-Bold').fontSize(14).fillColor('#1e40af').text('FINAL TOTAL:', 300, currentY, { align: 'right', width: 150 });
+    const finalLabel = financial_status === 'FINALIZED' ? 'CONFIRMED FINAL TOTAL:' : 'EST. FINAL TOTAL:';
+    doc.font('Helvetica-Bold').fontSize(12).fillColor('#1e40af').text(finalLabel, 300, currentY, { align: 'right', width: 150 });
     doc.text(`INR ${finalTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 450, currentY, { align: 'right', width: 95 });
 
     // Remarks
@@ -7913,6 +8185,20 @@ api.post('/vendor-invoices/:id/finalize', authorizeAction('vendor_invoices', 'ap
         const confirmedCost = miiQty * confirmedRate;
         const itemVarianceTotal = confirmedCost - previousCost;
 
+        // Stage 6 Fix (Bug 2): Always write confirmed_unit_cost and confirmed_total_cost,
+        // regardless of whether there is a cost variance. Previously these were only written
+        // inside the if(itemVarianceTotal !== 0) block, leaving them NULL forever when
+        // confirmed_rate === estimated_rate (zero variance).
+        if (mii.project_status !== 'CLOSED') {
+          await connection.execute(
+            `UPDATE material_issue_items
+             SET confirmed_unit_cost = ?,
+                 confirmed_total_cost = ?
+             WHERE id = ?`,
+            [confirmedRate, confirmedCost, mii.id]
+          );
+        }
+
         if (itemVarianceTotal !== 0) {
           if (mii.project_status === 'CLOSED') {
             // Compensating adjustment strategy: Do not modify historical issue record.
@@ -8248,7 +8534,11 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
         batch_number as ref_no,
         quantity_received as qty_in,
         0 as qty_out,
-        total_value_received as value_change,
+        -- Stage 8 Fix (Bug 4): Use confirmed_value_received when available (invoice finalized).
+        -- total_value_received is set at GRN time using estimated rates and is never updated.
+        -- confirmed_value_received is populated during Financial Finalization and reflects
+        -- the actual audited cost. COALESCE falls back to estimated for unfinalized batches.
+        COALESCE(NULLIF(confirmed_value_received, 0), total_value_received) as value_change,
         NULL as project_name
       FROM inventory_batches 
       WHERE inventory_id = ? AND is_void = FALSE
@@ -8330,9 +8620,20 @@ api.get('/reports/grn-register', authorizeAction('reports', 'view'), async (req,
         g.grn_date,
         gi.item_name,
         gi.quantity,
-        gi.rate as unit_rate,
-        gi.total as taxable_value,
-        g.finalAmount as total_amount,
+        COALESCE(gi.confirmed_rate, gi.rate) as unit_rate,
+        COALESCE(gi.confirmed_rate * gi.quantity, gi.total) as taxable_value,
+        COALESCE(
+          (SELECT SUM(COALESCE(gi2.confirmed_rate, gi2.rate) * gi2.quantity) FROM grn_items gi2 WHERE gi2.grn_id = g.id) 
+          - CASE 
+              WHEN g.discountType = 'PERCENTAGE' 
+              THEN (SELECT SUM(COALESCE(gi2.confirmed_rate, gi2.rate) * gi2.quantity) FROM grn_items gi2 WHERE gi2.grn_id = g.id) * COALESCE(g.discountValue, 0) / 100
+              ELSE COALESCE(g.discountValue, 0)
+            END 
+          + COALESCE(g.transportCharges, 0) 
+          + COALESCE(g.otherCharges, 0),
+          g.finalAmount,
+          g.total_amount
+        ) as total_amount,
         g.created_by,
         p.name as project_name
       FROM grns g
@@ -8387,7 +8688,7 @@ api.get('/reports/procurement-register', authorizeAction('reports', 'view'), asy
       JOIN vendors v ON po.vendor_id = v.id
       JOIN projects p ON po.project_id = p.id
       LEFT JOIN (
-        SELECT g.po_id, gi.inventory_id, SUM(gi.total) as actual_value
+        SELECT g.po_id, gi.inventory_id, SUM(COALESCE(gi.confirmed_rate * gi.quantity, gi.total)) as actual_value
         FROM grns g
         JOIN grn_items gi ON gi.grn_id = g.id
         WHERE g.is_deleted = FALSE AND COALESCE(g.status, 'POSTED') IN ('ACTIVE', 'POSTED')

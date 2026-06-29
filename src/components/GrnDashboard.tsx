@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Search, X, Printer, Package, User, Building2, Calendar, FileText, Eye, Pencil, XCircle, FileCheck, ShieldAlert, Lock } from 'lucide-react';
+import { Plus, Search, X, Printer, Package, User, Building2, Calendar, FileText, Eye, Pencil, XCircle, FileCheck, ShieldAlert, Lock, Info } from 'lucide-react';
 import { API_CONFIG, ROLE_PERMISSIONS } from '../config';
 import { createAuthHeaders } from '../services/api';
 import { usePermissions } from '../hooks/usePermissions';
@@ -113,6 +113,67 @@ function GrnViewModal({ grn, onClose, onDownloadPdf }: GrnViewModalProps) {
             </div>
           </div>
 
+          {/* Financial Status Card */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-5 shadow-sm">
+            <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3 flex items-center">
+              <FileCheck className="w-4.5 h-4.5 mr-1.5 text-slate-500" />
+              Financial Status
+            </h4>
+            {grn.financial_status === 'FINALIZED' ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vendor Invoice</span>
+                  <span className="text-sm font-black text-blue-600">{grn.invoice_number}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</span>
+                  <span className="px-2 py-0.5 mt-0.5 inline-block bg-emerald-100 text-emerald-800 text-[10px] font-black rounded uppercase">
+                    {grn.invoice_status}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Confirmed On</span>
+                  <span className="text-sm font-semibold text-slate-800">
+                    {grn.confirmed_at ? new Date(grn.confirmed_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Variance</span>
+                  <span className={`text-sm font-bold ${grn.variance > 0 ? 'text-red-600' : grn.variance < 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
+                    {grn.variance > 0 ? '+' : grn.variance < 0 ? '-' : ''}₹{Math.abs(grn.variance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-sm font-bold text-slate-800">Awaiting Vendor Invoice</span>
+                  <span className="block text-[11px] text-slate-400 font-medium mt-0.5">Material received. Financial verification pending.</span>
+                </div>
+                <span className="px-2 py-0.5 inline-block bg-amber-100 text-amber-800 text-[10px] font-black rounded uppercase w-fit">
+                  PENDING VERIFICATION
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Info Banner regarding financial state */}
+          {grn.financial_status === 'FINALIZED' ? (
+            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex items-start space-x-3 text-emerald-800 mb-4 shadow-sm">
+              <Info className="w-4.5 h-4.5 flex-shrink-0 mt-0.5 text-emerald-500" />
+              <div className="text-xs font-semibold leading-relaxed">
+                This GRN has been financially finalized. Financial values shown below are confirmed through Vendor Invoice <span className="font-bold">{grn.invoice_number}</span>.
+              </div>
+            </div>
+          ) : (
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-start space-x-3 text-blue-800 mb-4 shadow-sm">
+              <Info className="w-4.5 h-4.5 flex-shrink-0 mt-0.5 text-blue-500" />
+              <div className="text-xs font-semibold leading-relaxed">
+                Estimated values recorded when the material was physically received. Final financial values will be available once the Vendor Invoice is finalized.
+              </div>
+            </div>
+          )}
+
           {/* Items Table with inner Scroll */}
           <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
             <div className="overflow-x-auto">
@@ -121,8 +182,12 @@ function GrnViewModal({ grn, onClose, onDownloadPdf }: GrnViewModalProps) {
                   <tr>
                     <th className="px-6 py-4">Description</th>
                     <th className="px-4 py-4 text-center">Qty</th>
-                    <th className="px-4 py-4 text-right">Rate</th>
-                    <th className="px-6 py-4 text-right">Amount</th>
+                    <th className="px-4 py-4 text-right">
+                      {grn.financial_status === 'FINALIZED' ? 'Confirmed Rate' : 'Estimated Rate'}
+                    </th>
+                    <th className="px-6 py-4 text-right">
+                      {grn.financial_status === 'FINALIZED' ? 'Confirmed Amount' : 'Estimated Amount'}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium">
@@ -157,7 +222,9 @@ function GrnViewModal({ grn, onClose, onDownloadPdf }: GrnViewModalProps) {
                     return (
                       <>
                         <tr>
-                          <td colSpan={3} className="px-6 py-2 text-right text-xs text-slate-500">Subtotal</td>
+                          <td colSpan={3} className="px-6 py-2 text-right text-xs text-slate-500">
+                            {grn.financial_status === 'FINALIZED' ? 'Confirmed Subtotal' : 'Subtotal'}
+                          </td>
                           <td className="px-6 py-2 text-right text-sm font-bold text-slate-600">₹{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         
@@ -186,7 +253,7 @@ function GrnViewModal({ grn, onClose, onDownloadPdf }: GrnViewModalProps) {
                         
                         <tr className="border-t border-slate-200">
                           <td colSpan={3} className="px-6 py-5 text-right text-xs font-black text-slate-500 uppercase tracking-widest">
-                            Final Total
+                            {grn.financial_status === 'FINALIZED' ? 'Confirmed Final Total' : 'Final Total'}
                           </td>
                           <td className="px-6 py-5 text-right text-2xl font-black text-blue-700">₹{finalTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
@@ -819,7 +886,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                     <th className="px-6 py-4">Cancellation Reason</th>
                   </>
                 )}
-                {activeTab !== 'EDITED' && <th className="px-6 py-4 text-right">Total Amount</th>}
+                {activeTab !== 'EDITED' && <th className="px-6 py-4 text-right">Estimated Amount</th>}
                 <th className="px-6 py-4 text-center">Actions</th>
               </tr>
             </thead>
@@ -1173,7 +1240,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <label className="block text-[10px] uppercase font-bold text-gray-500 mb-1">Rate (₹)</label>
+                        <label className="block text-[10px] uppercase font-bold text-gray-500 mb-1">Estimated Rate (₹)</label>
                         <input
                           type="number"
                           step="0.01"
@@ -1186,7 +1253,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                         />
                       </div>
                       <div className="md:col-span-2">
-                        <label className="block text-[10px] uppercase font-bold text-gray-500 mb-1">Total (₹)</label>
+                        <label className="block text-[10px] uppercase font-bold text-gray-500 mb-1">Estimated Amount (₹)</label>
                         <input
                           type="number"
                           step="0.01"

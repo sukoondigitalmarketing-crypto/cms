@@ -1089,8 +1089,8 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                           <td className="px-4 py-3 font-medium text-gray-900">{batch.batch_number}</td>
                           <td className="px-4 py-3 text-right text-gray-500">{batch.quantity_received}</td>
                           <td className="px-4 py-3 text-right font-bold text-emerald-700">{batch.quantity_remaining}</td>
-                          <td className="px-4 py-3 text-right text-gray-600">₹{parseFloat(batch.unit_price).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right font-bold text-gray-900">₹{(batch.quantity_remaining * batch.unit_price).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right text-gray-600">₹{parseFloat(batch.confirmed_unit_price || batch.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="px-4 py-3 text-right font-bold text-gray-900">₹{parseFloat(batch.total_value_remaining).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1098,7 +1098,7 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                       <tr className="bg-gray-50 font-bold border-t border-gray-200">
                         <td colSpan={3} className="px-4 py-3 text-right">Total Inventory Value:</td>
                         <td colSpan={3} className="px-4 py-3 text-right text-blue-700 text-lg">
-                          ₹{itemBatches.reduce((acc, b) => acc + (b.quantity_remaining * b.unit_price), 0).toLocaleString()}
+                          ₹{itemBatches.reduce((acc, b) => acc + parseFloat(b.total_value_remaining || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
                       </tr>
                     </tfoot>

@@ -251,7 +251,14 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     setDetailedItems([]);
     setExpandedItems({});
 
-    const grnIds = invoice.grn_ids ? invoice.grn_ids.split(',').map(Number) : [];
+    let grnIds: number[] = [];
+    if (invoice.grn_ids) {
+      if (Array.isArray(invoice.grn_ids)) {
+        grnIds = invoice.grn_ids.map(Number);
+      } else if (typeof invoice.grn_ids === 'string') {
+        grnIds = invoice.grn_ids.split(',').map(Number);
+      }
+    }
     if (grnIds.length === 0) {
       setLoadingDetail(false);
       return;
@@ -1524,10 +1531,10 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                                                 <th className="px-3 py-2">Receipt Document #</th>
                                                 <th className="px-3 py-2">Receipt Date</th>
                                                 <th className="px-3 py-2 text-center">Quantity</th>
-                                                <th className="px-3 py-2 text-right">GRN Rate</th>
+                                                <th className="px-3 py-2 text-right">Estimated Rate</th>
                                                 <th className="px-3 py-2 text-center">GST %</th>
-                                                <th className="px-3 py-2 text-right">Subtotal</th>
-                                                <th className="px-3 py-2 text-right">Total (Inc. GST)</th>
+                                                <th className="px-3 py-2 text-right">Estimated Subtotal</th>
+                                                <th className="px-3 py-2 text-right">Estimated Total</th>
                                               </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
@@ -1866,7 +1873,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                                 <td className="px-4 py-3 text-center">
                                   <input
                                     type="number"
-                                    step="0.01"
+                                    step="0.000001"
                                     min="0.00"
                                     required
                                     value={item.confirmed_rate}
