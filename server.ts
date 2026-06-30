@@ -2450,12 +2450,32 @@ export const InvoiceRepository = {
 export const InvoiceValidator = {
   async validateVendorMatch(connection: mysql.Connection | mysql.Pool, vendorId: number, grnIds: number[]) {
     if (!grnIds.length) return;
+
+    // Fetch the vendor's actual name to support fallback string comparison
+    const [vendors]: any = await connection.query(
+      'SELECT vendor_name FROM vendors WHERE id = ?',
+      [vendorId]
+    );
+    if (!vendors.length) {
+      throw new AppError('NOT_FOUND', 'Selected vendor not found.', 404);
+    }
+    const selectedVendorName = vendors[0].vendor_name;
+
+    // Fetch the GRNs with both vendor_id and vendorName
     const [grns]: any = await connection.query(
-      'SELECT id, vendor_id, grn_number FROM grns WHERE id IN (?) AND is_deleted = FALSE',
+      'SELECT id, vendor_id, vendorName, grn_number FROM grns WHERE id IN (?) AND is_deleted = FALSE',
       [grnIds]
     );
+
     for (const grn of grns) {
-      if (grn.vendor_id !== vendorId) {
+      const idMatch = grn.vendor_id === vendorId;
+
+      // Fallback string-based comparison to preserve compatibility for manual/legacy GRNs
+      const grnNameNormalized = (grn.vendorName || '').trim().toLowerCase();
+      const selectedNameNormalized = selectedVendorName.trim().toLowerCase();
+      const nameMatch = grnNameNormalized === selectedNameNormalized;
+
+      if (!idMatch && !nameMatch) {
         throw new AppError(
           'BUSINESS_RULE_ERROR',
           `GRN ${grn.grn_number} does not belong to the selected vendor.`,
@@ -7786,11 +7806,10 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       throw new Error('One or more of the selected GRNs could not be found.');
     }
 
+    // Verify vendor match using centralized logic (dual ID & fallback name validation)
+    await InvoiceValidator.validateVendorMatch(connection, vendor_id, grn_ids);
+
     for (const grn of grns) {
-      // Verify vendor match
-      if (grn.vendorName !== vendor.vendor_name) {
-        throw new Error(`GRN ${grn.grn_number} does not belong to vendor ${vendor.vendor_name}.`);
-      }
       // Verify status
       if (!['ACTIVE', 'POSTED'].includes(grn.status)) {
         throw new Error(`GRN ${grn.grn_number} is not in ACTIVE or POSTED status.`);
