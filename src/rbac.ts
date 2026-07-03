@@ -12,7 +12,7 @@ export type RbacModule =
   | 'customers'
   | 'contractor_payments'
   | 'rbac'
-  | 'vendor_invoices';
+  | 'vendor_invoices' | 'vendor_payments';
 
 export type RbacAction =
   | 'view'

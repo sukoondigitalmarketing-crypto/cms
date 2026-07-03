@@ -51,6 +51,9 @@ interface Invoice {
   project_names?: string;
   item_count: number;
   createdAt: string;
+  amount_paid?: number;
+  pending_amount?: number;
+  payment_status?: string;
 }
 
 interface Project {
@@ -359,7 +362,8 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     canPrint: boolean;
   }
 
-  const getWorkflowConfig = (status: string): InvoiceWorkflowConfig => {
+  const getWorkflowConfig = (input: any): InvoiceWorkflowConfig => {
+    const status = typeof input === 'string' ? input : input?.status;
     const s = (status || '').toUpperCase();
     const canApproveRole = hasPermission(role, 'vendor_invoices', 'approve');
     const canEditRole = hasPermission(role, 'vendor_invoices', 'edit');
@@ -400,6 +404,21 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     } else {
       approvalStatus = 'Finalized';
       paymentStatus = 'Unpaid';
+    }
+
+    if (input && typeof input === 'object') {
+      const ps = (input.payment_status || '').toUpperCase();
+      if (ps === 'PAID') {
+        paymentStatus = 'Paid';
+      } else if (ps === 'PARTIALLY PAID' || ps === 'PARTIALLY_PAID' || ps === 'PARTIAL') {
+        paymentStatus = 'Partial';
+      } else if (input.amount_paid !== undefined) {
+        const paid = Number(input.amount_paid || 0);
+        const total = Number(input.invoice_amount || 0);
+        if (paid >= total && total > 0) paymentStatus = 'Paid';
+        else if (paid > 0) paymentStatus = 'Partial';
+        else paymentStatus = 'Unpaid';
+      }
     }
 
     return {
@@ -718,7 +737,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
         }
       }
       
-      const config = getWorkflowConfig(inv.status);
+      const config = getWorkflowConfig(inv);
       const appStatus = config.approvalStatus;
       const payStatus = config.paymentStatus;
       
@@ -751,7 +770,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
 
     invoices.forEach(inv => {
       const amt = Number(inv.invoice_amount) || 0;
-      const config = getWorkflowConfig(inv.status);
+      const config = getWorkflowConfig(inv);
       const appStatus = config.approvalStatus;
       const payStatus = config.paymentStatus;
 
@@ -1109,7 +1128,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                     ) : (
                       filteredInvoices.map((inv) => {
                         const varianceStyles = getVarianceStyles(Number(inv.reference_amount), Number(inv.invoice_amount));
-                        const config = getWorkflowConfig(inv.status);
+                        const config = getWorkflowConfig(inv);
                         const appStatus = config.approvalStatus;
                         const payStatus = config.paymentStatus;
                         
@@ -1168,7 +1187,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                                 payStatus === 'Partial' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
                                 'bg-red-50 text-red-700 border-red-200'
                               }`}>
-                                {payStatus}
+                              {payStatus === 'Partial' ? 'PARTIALLY PAID' : payStatus === 'Paid' ? 'PAID' : 'UNPAID'}
                               </span>
                             </td>
                             <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -1260,7 +1279,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
             </button>
             <div className="flex items-center space-x-3">
               {(() => {
-                const config = getWorkflowConfig(selectedInvoice.status);
+                const config = getWorkflowConfig(selectedInvoice);
                 return (
                   <>
                     {config.isEditable && (
@@ -1351,7 +1370,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                     </h3>
                     <div className="flex items-center space-x-2">
                       {(() => {
-                        const config = getWorkflowConfig(selectedInvoice.status);
+                        const config = getWorkflowConfig(selectedInvoice);
                         return (
                           <>
                             <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${
@@ -1367,7 +1386,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                               config.paymentStatus === 'Partial' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
                               'bg-red-50 text-red-700 border-red-200'
                             }`}>
-                              Payment Status: {config.paymentStatus}
+                              Payment Status: {config.paymentStatus === 'Partial' ? 'PARTIALLY PAID' : config.paymentStatus === 'Paid' ? 'PAID' : 'UNPAID'}
                             </span>
                           </>
                         );
@@ -1397,6 +1416,14 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                     <div>
                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Invoice Amount</span>
                       <span className="text-sm font-bold text-slate-900">₹{Number(selectedInvoice.invoice_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Amount Paid</span>
+                      <span className="text-sm font-bold text-emerald-600">₹{Number(selectedInvoice.amount_paid || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Pending Amount</span>
+                      <span className="text-sm font-bold text-amber-600">₹{Number(selectedInvoice.pending_amount !== undefined ? selectedInvoice.pending_amount : Number(selectedInvoice.invoice_amount) - Number(selectedInvoice.amount_paid || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                     </div>
                     <div>
                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Reference GRN Sum</span>

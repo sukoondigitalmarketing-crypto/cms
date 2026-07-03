@@ -24,13 +24,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   : ['http://localhost:3000', 'http://localhost:5173', 'https://cms-3gdl.onrender.com'];
 
 const corsOptions = {
-  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true,
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -39,6 +33,26 @@ server.use(cors(corsOptions));
 server.use(express.json());
 const PORT = parseInt(process.env.PORT || '10000', 10);
 const api = express.Router();
+
+api.use((req, res, next) => {
+  console.log(`[API ROUTER] Incoming: ${req.method} ${req.url} (path: ${req.path}, baseUrl: ${req.baseUrl}, originalUrl: ${req.originalUrl})`);
+  next();
+});
+
+api.get('/debug-stack', (req, res) => {
+  const stack = api.stack.map(layer => {
+    return {
+      route: layer.route ? {
+        path: layer.route.path,
+        methods: (layer.route as any).methods
+      } : null,
+      name: layer.name,
+      keys: layer.keys,
+      regexp: layer.regexp.toString()
+    };
+  });
+  res.json(stack);
+});
 
 const ROLES = {
   CEO: 'CEO',
@@ -51,7 +65,7 @@ const ROLES = {
   EXECUTIVE: 'EXECUTIVE'
 } as const;
 
-type RbacModule = 'dashboard' | 'masters' | 'procurement' | 'inventory' | 'grn' | 'reports' | 'projects' | 'approvals' | 'customers' | 'contractor_payments' | 'rbac' | 'vendor_invoices';
+type RbacModule = 'dashboard' | 'masters' | 'procurement' | 'inventory' | 'grn' | 'reports' | 'projects' | 'approvals' | 'customers' | 'contractor_payments' | 'rbac' | 'vendor_invoices' | 'vendor_payments';
 type RbacAction = 'view' | 'create' | 'edit' | 'delete' | 'approve' | 'cancel' | 'export' | 'rollback' | 'manage_users' | 'manage_rbac';
 
 function normalizeRole(role?: any): string {
@@ -60,7 +74,7 @@ function normalizeRole(role?: any): string {
   return candidate;
 }
 
-const RBAC_MODULES: RbacModule[] = ['dashboard', 'masters', 'procurement', 'inventory', 'grn', 'reports', 'projects', 'approvals', 'customers', 'contractor_payments', 'rbac', 'vendor_invoices'];
+const RBAC_MODULES: RbacModule[] = ['dashboard', 'masters', 'procurement', 'inventory', 'grn', 'reports', 'projects', 'approvals', 'customers', 'contractor_payments', 'rbac', 'vendor_invoices', 'vendor_payments'];
 const RBAC_ACTIONS: RbacAction[] = ['view', 'create', 'edit', 'delete', 'approve', 'cancel', 'export', 'rollback', 'manage_users', 'manage_rbac'];
 
 const DEFAULT_ROLE_PERMISSIONS: Record<string, Partial<Record<RbacModule, Partial<Record<RbacAction, boolean>>>>> = {
@@ -77,6 +91,7 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, Partial<Record<RbacModule, Partia
     customers: { view: true, create: true, edit: true, export: true },
     contractor_payments: { view: true, create: true, edit: true, approve: true, export: true },
     vendor_invoices: { view: true, create: true, edit: true, delete: true, export: true },
+    vendor_payments: { view: true, export: true },
   },
   [ROLES.GENERAL_MANAGER]: {
     dashboard: { view: true, export: true },
@@ -747,11 +762,11 @@ async function initDB() {
         [rootUid, 'Root CEO', ROOT_CEO_EMAIL, rootHash, ROLES.CEO, 'Active', true]
       );
     } else {
-      console.log(`✅ Root CEO already exists, skipping password reset`);
-      // Ensure CEO role is still set (security check)
+      console.log(`✅ Root CEO already exists, updating role, status, and password hash from env`);
+      const rootHash = hashPassword(ROOT_CEO_PASSWORD);
       await poolConnection.query(
-        'UPDATE users SET role = ?, status = ? WHERE email = ?',
-        [ROLES.CEO, 'Active', ROOT_CEO_EMAIL]
+        'UPDATE users SET role = ?, status = ?, password_hash = ? WHERE email = ?',
+        [ROLES.CEO, 'Active', rootHash, ROOT_CEO_EMAIL]
       );
     }
 
@@ -1640,6 +1655,58 @@ async function initDB() {
         UNIQUE KEY unique_grn_link (grn_id)
       )
     `);
+
+    // Vendor Payments Table
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS vendor_payments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vendor_id INT NOT NULL,
+        project_id INT NOT NULL,
+        payment_date DATE NOT NULL,
+        payment_amount DECIMAL(15, 2) NOT NULL,
+        payment_mode VARCHAR(50) NOT NULL,
+        reference_no VARCHAR(100) NULL,
+        remarks TEXT NULL,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id),
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      )
+    `);
+
+    // Vendor Payment Allocations Table
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS vendor_payment_allocations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vendor_payment_id INT NOT NULL,
+        vendor_invoice_id INT NOT NULL,
+        allocated_amount DECIMAL(15, 2) NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vendor_payment_id) REFERENCES vendor_payments(id) ON DELETE CASCADE,
+        FOREIGN KEY (vendor_invoice_id) REFERENCES vendor_invoices(id)
+      )
+    `);
+
+    const [vpCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendor_payments");
+    const vpColNames = vpCols.map((c: any) => c.Field);
+    if (!vpColNames.includes('project_id')) {
+      await poolConnection.query("ALTER TABLE vendor_payments ADD COLUMN project_id INT NOT NULL DEFAULT 1 AFTER vendor_id");
+      try {
+        await poolConnection.query("ALTER TABLE vendor_payments ADD CONSTRAINT fk_vendor_payments_project FOREIGN KEY (project_id) REFERENCES projects(id)");
+      } catch (e: any) {
+        console.warn(`[CONSTRAINT_WARN] ${e.message}`);
+      }
+      console.log("✅ Added project_id migration to vendor_payments");
+    }
+    if (!vpColNames.includes('updatedAt')) {
+      await poolConnection.query("ALTER TABLE vendor_payments ADD COLUMN updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+      console.log("✅ Added updatedAt migration to vendor_payments");
+    }
+    if (vpColNames.includes('created_by')) {
+      await poolConnection.query("ALTER TABLE vendor_payments MODIFY COLUMN created_by VARCHAR(100) NULL");
+      console.log("✅ Made created_by column nullable on vendor_payments");
+    }
 
     // Vendor Invoice Items Line-Item Table for Financial Finalization
     await poolConnection.query(`
@@ -5014,6 +5081,162 @@ api.get('/contractor-ledger', authorizeAction('contractor_payments', 'view'), as
     }
 });
 
+// ────────────────────────────────────────────────────────────────────────
+// VENDOR PAYMENTS ROUTES
+// ────────────────────────────────────────────────────────────────────────
+
+api.get('/vendor-payments', authorizeAction('vendor_payments', 'view'), async (req, res) => {
+  const { search, vendor_id, from_date, to_date } = req.query;
+  try {
+    let query = `
+      SELECT vp.*, p.name as projectName, v.vendor_name as display_vendor_name,
+             (SELECT GROUP_CONCAT(vi.invoice_number) 
+              FROM vendor_payment_allocations vpa 
+              JOIN vendor_invoices vi ON vpa.vendor_invoice_id = vi.id 
+              WHERE vpa.vendor_payment_id = vp.id) as invoice_numbers
+      FROM vendor_payments vp
+      LEFT JOIN projects p ON vp.project_id = p.id
+      LEFT JOIN vendors v ON vp.vendor_id = v.id
+      WHERE vp.is_deleted = FALSE
+    `;
+    const params = [];
+    if (search) {
+      query += ` AND (v.vendor_name LIKE ? OR p.name LIKE ? OR vp.reference_no LIKE ?)`;
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    if (vendor_id) {
+      query += ` AND vp.vendor_id = ?`;
+      params.push(vendor_id);
+    }
+    if (from_date) {
+      query += ` AND DATE(vp.payment_date) >= ?`;
+      params.push(from_date);
+    }
+    if (to_date) {
+      query += ` AND DATE(vp.payment_date) <= ?`;
+      params.push(to_date);
+    }
+    query += ` ORDER BY vp.payment_date DESC`;
+    const [rows] = await pool.execute(query, params);
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error('Fetch Vendor Payments Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+api.get('/vendor-payments/:id', authorizeAction('vendor_payments', 'view'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [rows] = await pool.execute<any[]>(`
+      SELECT vp.*, p.name as projectName, v.vendor_name as display_vendor_name
+      FROM vendor_payments vp
+      LEFT JOIN projects p ON vp.project_id = p.id
+      LEFT JOIN vendors v ON vp.vendor_id = v.id
+      WHERE vp.id = ? AND vp.is_deleted = FALSE
+    `, [id]);
+    if ((rows as any[]).length === 0) return res.status(404).json({ error: 'Payment record not found' });
+    res.status(200).json((rows as any[])[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+api.post('/vendor-payments', authorizeAction('vendor_payments', 'create'), async (req, res) => {
+  const { vendor_id, payment_date, payment_amount, payment_mode, reference_no, remarks, allocations } = req.body;
+  const project_id = req.body.project_id || 1;
+  if (!vendor_id || !project_id || !payment_date || !payment_amount || !payment_mode) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    if (Array.isArray(allocations) && allocations.length > 0) {
+      for (const alloc of allocations) {
+        const { vendor_invoice_id, allocated_amount } = alloc;
+        const [invRows]: any = await connection.execute(
+          `SELECT invoice_amount FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE`,
+          [vendor_invoice_id]
+        );
+        if (invRows.length === 0) {
+          await connection.rollback();
+          return res.status(400).json({ error: `Vendor invoice #${vendor_invoice_id} not found.` });
+        }
+        const invoice_amount = Number(invRows[0].invoice_amount || 0);
+
+        const [paidRows]: any = await connection.execute(
+          `SELECT COALESCE(SUM(vpa.allocated_amount), 0) AS amount_paid
+           FROM vendor_payment_allocations vpa
+           JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id
+           WHERE vpa.vendor_invoice_id = ? AND vp.is_deleted = FALSE`,
+          [vendor_invoice_id]
+        );
+        const amount_paid = Number(paidRows[0].amount_paid || 0);
+        const pending_amount = Number((invoice_amount - amount_paid).toFixed(2));
+        const attempted_amount = Number(allocated_amount);
+
+        if (attempted_amount - pending_amount > 0.001) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: `Overpayment violation: Attempted payment amount (₹${attempted_amount}) exceeds pending amount (₹${pending_amount}). Invoice Amount: ₹${invoice_amount}, Amount Paid: ₹${amount_paid}, Pending Amount: ₹${pending_amount}.`,
+            invoice_amount,
+            amount_paid,
+            pending_amount,
+            attempted_payment_amount: attempted_amount
+          });
+        }
+      }
+    }
+
+    const [result] = await connection.execute<any>(
+      `INSERT INTO vendor_payments (vendor_id, project_id, payment_date, payment_amount, payment_mode, reference_no, remarks) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [vendor_id, project_id, payment_date, payment_amount, payment_mode, reference_no || null, remarks || null]
+    );
+    const paymentId = (result as any).insertId;
+    if (Array.isArray(allocations) && allocations.length > 0) {
+      for (const alloc of allocations) {
+        const { vendor_invoice_id, allocated_amount } = alloc;
+        await connection.execute(
+          `INSERT INTO vendor_payment_allocations (vendor_payment_id, vendor_invoice_id, allocated_amount) VALUES (?, ?, ?)`,
+          [paymentId, vendor_invoice_id, allocated_amount]
+        );
+      }
+    }
+    await connection.commit();
+    res.status(201).json({ id: paymentId, message: 'Payment recorded successfully' });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+api.put('/vendor-payments/:id', authorizeAction('vendor_payments', 'edit'), async (req, res) => {
+  const { id } = req.params;
+  const { vendor_id, project_id, payment_date, payment_amount, payment_mode, reference_no, remarks } = req.body;
+  try {
+    await pool.execute(
+      `UPDATE vendor_payments SET vendor_id = ?, project_id = ?, payment_date = ?, payment_amount = ?, payment_mode = ?, reference_no = ?, remarks = ? WHERE id = ? AND is_deleted = FALSE`,
+      [vendor_id, project_id, payment_date, payment_amount, payment_mode, reference_no || null, remarks || null, id]
+    );
+    res.status(200).json({ message: 'Payment updated successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+api.delete('/vendor-payments/:id', authorizeAction('vendor_payments', 'delete'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.execute('UPDATE vendor_payments SET is_deleted = TRUE WHERE id = ?', [id]);
+    res.status(200).json({ message: 'Payment deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 api.get('/project-financials', authorizeAction('projects', 'view'), async (req, res) => {
   try {
     const [rows]: any = await pool.execute(`
@@ -7747,7 +7970,15 @@ api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (r
               GROUP_CONCAT(DISTINCT vig.grn_id) as grn_ids,
               GROUP_CONCAT(DISTINCT g.grn_number) as grn_numbers,
               GROUP_CONCAT(DISTINCT p.name) as project_names,
-              COUNT(DISTINCT gi.id) as item_count
+              COUNT(DISTINCT gi.id) as item_count,
+              MAX(g.projectId) as project_id,
+              COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) AS amount_paid,
+              (vi.invoice_amount - COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0)) AS pending_amount,
+              CASE 
+                WHEN COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) >= vi.invoice_amount AND vi.invoice_amount > 0 THEN 'PAID'
+                WHEN COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) > 0 THEN 'PARTIALLY PAID'
+                ELSE 'UNPAID'
+              END AS payment_status
        FROM vendor_invoices vi
        LEFT JOIN vendor_invoice_grns vig ON vi.id = vig.vendor_invoice_id
        LEFT JOIN grns g ON vig.grn_id = g.id
@@ -7910,7 +8141,15 @@ api.get('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'view'), asyn
   const { id } = req.params;
   try {
     const [invoices]: any = await pool.query(
-      `SELECT vi.*, v.vendor_name, v.gst_number, v.address 
+      `SELECT vi.*, v.vendor_name, v.gst_number, v.address,
+             (SELECT MAX(g.projectId) FROM vendor_invoice_grns vig JOIN grns g ON vig.grn_id = g.id WHERE vig.vendor_invoice_id = vi.id) as project_id,
+             COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) AS amount_paid,
+             (vi.invoice_amount - COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0)) AS pending_amount,
+             CASE 
+               WHEN COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) >= vi.invoice_amount AND vi.invoice_amount > 0 THEN 'PAID'
+               WHEN COALESCE((SELECT SUM(vpa.allocated_amount) FROM vendor_payment_allocations vpa JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id WHERE vpa.vendor_invoice_id = vi.id AND vp.is_deleted = FALSE), 0) > 0 THEN 'PARTIALLY PAID'
+               ELSE 'UNPAID'
+             END AS payment_status
        FROM vendor_invoices vi 
        JOIN vendors v ON vi.vendor_id = v.id 
        WHERE vi.id = ? AND vi.is_deleted = FALSE`,
