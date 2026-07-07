@@ -3,7 +3,7 @@ import {
   Plus, Search, X, Trash2, Calendar, User, Building2, Receipt, 
   AlertTriangle, AlertCircle, CheckCircle2, ChevronDown, Check, ArrowRight,
   ChevronLeft, Printer, FileDown, Clock, Paperclip, Eye, RefreshCw, FileText, ChevronRight,
-  Edit, CheckSquare, Zap
+  Edit, CheckSquare, Zap, Lock
 } from 'lucide-react';
 import { API_CONFIG } from '../config';
 import { createAuthHeaders } from '../services/api';
@@ -1872,30 +1872,10 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                                 <td className="px-4 py-3 text-slate-500">{item.unit}</td>
                                 <td className="px-4 py-3 text-right text-slate-650">₹{parseFloat(item.estimated_rate).toFixed(2)}</td>
                                 <td className="px-4 py-3 text-center">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0.01"
-                                    required
-                                    value={item.billed_quantity}
-                                    onChange={(e) => {
-                                      const newLines = [...editingLineItems];
-                                      newLines[index].billed_quantity = e.target.value;
-                                      setEditingLineItems(newLines);
-                                      
-                                      if (!isAmountManuallyEdited) {
-                                        const refSum = newLines.reduce((sum, line) => {
-                                          const q = parseFloat(line.billed_quantity) || 0;
-                                          const r = parseFloat(line.confirmed_rate) || 0;
-                                          const g = parseFloat(line.gst_amount) || 0;
-                                          const d = parseFloat(line.discount_amount) || 0;
-                                          return sum + (q * r) + g - d;
-                                        }, 0);
-                                        setInvoiceAmount(refSum > 0 ? refSum.toFixed(2) : '');
-                                      }
-                                    }}
-                                    className="w-20 px-2 py-1 text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                                  />
+                                  <div className="flex items-center justify-center space-x-1.5 text-slate-600 bg-slate-100/80 border border-slate-200 px-3 py-1.5 rounded-xl w-24 mx-auto font-bold select-none" title="Quantity is locked to GRN physical receipt">
+                                    <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    <span>{item.billed_quantity}</span>
+                                  </div>
                                 </td>
                                 <td className="px-4 py-3 text-center">
                                   <input

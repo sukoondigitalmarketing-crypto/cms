@@ -67,6 +67,8 @@ export function VendorPaymentsDashboard({ role }: VendorPaymentsDashboardProps) 
   });
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const formatCurrency = (value: number | string | undefined) =>
+    `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
   // Fetch vendors and invoices
   useEffect(() => {
@@ -90,7 +92,7 @@ export function VendorPaymentsDashboard({ role }: VendorPaymentsDashboardProps) 
       const headers = createAuthHeaders();
       const [vRes, invRes, pRes] = await Promise.all([
         fetch(`${API_CONFIG.BASE_URL}/master/vendors`, { headers }),
-        fetch(`${API_CONFIG.BASE_URL}/vendor-invoices`, { headers }),
+        fetch(`${API_CONFIG.BASE_URL}/vendor-invoices?outstanding_only=true`, { headers }),
         fetch(`${API_CONFIG.BASE_URL}/vendor-payments`, { headers })
       ]);
 
@@ -118,14 +120,13 @@ export function VendorPaymentsDashboard({ role }: VendorPaymentsDashboardProps) 
     );
   }, [vendors, vendorSearch]);
 
-  // Filter invoices for selected vendor with finalized status only
+  // Server supplies only outstanding invoices; keep this local guard for vendor/status matching.
   const filteredInvoices = useMemo(() => {
     if (!selectedVendor) return [];
-    // Load all finalized invoices (status === 'FINALIZED') belonging to the selected vendor.
-    // Filtering by UNPAID, PARTIALLY PAID, and PAID will be introduced in a later phase once
-    // the Vendor Payments module becomes the source of truth for invoice payment status.
     return invoices.filter(inv => 
-      inv.vendor_id === selectedVendor.id && inv.status === 'FINALIZED'
+      inv.vendor_id === selectedVendor.id &&
+      inv.status === 'FINALIZED' &&
+      Number(inv.pending_amount !== undefined ? inv.pending_amount : Number(inv.invoice_amount) - Number(inv.amount_paid || 0)) > 0.001
     );
   }, [invoices, selectedVendor]);
   const filteredPayments = useMemo(() => {
@@ -431,7 +432,7 @@ export function VendorPaymentsDashboard({ role }: VendorPaymentsDashboardProps) 
                       value={selectedInvoice?.id || ''}
                       onChange={(e) => {
                         const invId = parseInt(e.target.value);
-                        const inv = invoices.find(i => i.id === invId);
+                        const inv = filteredInvoices.find(i => i.id === invId);
                         setSelectedInvoice(inv || null);
                         setValidationError(null);
                         setInfoMessage(null);
@@ -441,7 +442,7 @@ export function VendorPaymentsDashboard({ role }: VendorPaymentsDashboardProps) 
                       <option value="">Select Invoice...</option>
                       {filteredInvoices.map(inv => (
                         <option key={inv.id} value={inv.id}>
-                          {inv.invoice_number} | {new Date(inv.invoice_date).toLocaleDateString()} | Amount: ₹{inv.invoice_amount.toLocaleString('en-IN')}
+                          {inv.invoice_number} | Invoice: {formatCurrency(inv.invoice_amount)} | Pending: {formatCurrency(inv.pending_amount !== undefined ? inv.pending_amount : Number(inv.invoice_amount) - Number(inv.amount_paid || 0))} | Status: {inv.payment_status || 'UNPAID'}
                         </option>
                       ))}
                     </select>

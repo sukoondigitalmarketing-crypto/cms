@@ -5148,33 +5148,63 @@ api.post('/vendor-payments', authorizeAction('vendor_payments', 'create'), async
   if (!vendor_id || !project_id || !payment_date || !payment_amount || !payment_mode) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  if (!Array.isArray(allocations) || allocations.length === 0) {
+    return res.status(400).json({ error: 'At least one vendor invoice allocation is required.' });
+  }
+  const paymentAmountNum = Number(payment_amount);
+  if (!Number.isFinite(paymentAmountNum) || paymentAmountNum <= 0) {
+    return res.status(400).json({ error: 'Payment amount must be greater than zero.' });
+  }
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
-    if (Array.isArray(allocations) && allocations.length > 0) {
-      for (const alloc of allocations) {
-        const { vendor_invoice_id, allocated_amount } = alloc;
-        const [invRows]: any = await connection.execute(
-          `SELECT invoice_amount FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE`,
-          [vendor_invoice_id]
-        );
-        if (invRows.length === 0) {
-          await connection.rollback();
-          return res.status(400).json({ error: `Vendor invoice #${vendor_invoice_id} not found.` });
-        }
-        const invoice_amount = Number(invRows[0].invoice_amount || 0);
+    let totalAllocated = 0;
+    for (const alloc of allocations) {
+      const { vendor_invoice_id, allocated_amount } = alloc;
+      const attempted_amount = Number(allocated_amount);
+      if (!vendor_invoice_id || !Number.isFinite(attempted_amount) || attempted_amount <= 0) {
+        await connection.rollback();
+        return res.status(400).json({ error: 'Each allocation must include a valid invoice and amount greater than zero.' });
+      }
 
-        const [paidRows]: any = await connection.execute(
-          `SELECT COALESCE(SUM(vpa.allocated_amount), 0) AS amount_paid
-           FROM vendor_payment_allocations vpa
-           JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id
-           WHERE vpa.vendor_invoice_id = ? AND vp.is_deleted = FALSE`,
-          [vendor_invoice_id]
-        );
-        const amount_paid = Number(paidRows[0].amount_paid || 0);
-        const pending_amount = Number((invoice_amount - amount_paid).toFixed(2));
-        const attempted_amount = Number(allocated_amount);
+      const [invRows]: any = await connection.execute(
+        `SELECT vendor_id, invoice_amount, status FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE`,
+        [vendor_invoice_id]
+      );
+      if (invRows.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({ error: `Vendor invoice #${vendor_invoice_id} not found.` });
+      }
+      if (Number(invRows[0].vendor_id) !== Number(vendor_id)) {
+        await connection.rollback();
+        return res.status(400).json({ error: `Vendor invoice #${vendor_invoice_id} does not belong to the selected vendor.` });
+      }
+      if (invRows[0].status !== 'FINALIZED') {
+        await connection.rollback();
+        return res.status(400).json({ error: `Vendor invoice #${vendor_invoice_id} must be finalized before payment.` });
+      }
+      const invoice_amount = Number(invRows[0].invoice_amount || 0);
+
+      const [paidRows]: any = await connection.execute(
+        `SELECT COALESCE(SUM(vpa.allocated_amount), 0) AS amount_paid
+         FROM vendor_payment_allocations vpa
+         JOIN vendor_payments vp ON vpa.vendor_payment_id = vp.id
+         WHERE vpa.vendor_invoice_id = ? AND vp.is_deleted = FALSE`,
+        [vendor_invoice_id]
+      );
+      const amount_paid = Number(paidRows[0].amount_paid || 0);
+      const pending_amount = Number((invoice_amount - amount_paid).toFixed(2));
+
+        if (pending_amount <= 0.001) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: `Payment blocked: Vendor invoice #${vendor_invoice_id} is already fully paid. Pending Amount: ${pending_amount}.`,
+            invoice_amount,
+            amount_paid,
+            pending_amount
+          });
+        }
 
         if (attempted_amount - pending_amount > 0.001) {
           await connection.rollback();
@@ -5185,8 +5215,14 @@ api.post('/vendor-payments', authorizeAction('vendor_payments', 'create'), async
             pending_amount,
             attempted_payment_amount: attempted_amount
           });
-        }
       }
+
+      totalAllocated += attempted_amount;
+    }
+
+    if (Math.abs(totalAllocated - paymentAmountNum) > 0.001) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Payment amount must equal the total allocated invoice amount.' });
     }
 
     const [result] = await connection.execute<any>(
@@ -7964,8 +8000,8 @@ api.put('/grns/:id', authorizeAction('grn', 'edit'), async (req, res) => {
 
 api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (req, res) => {
   try {
-    const [rows]: any = await pool.query(
-      `SELECT vi.*, 
+    const outstandingOnly = String(req.query.outstanding_only || '').toLowerCase() === 'true';
+    let query = `SELECT vi.*, 
               COUNT(DISTINCT vig.grn_id) as grn_count, 
               GROUP_CONCAT(DISTINCT vig.grn_id) as grn_ids,
               GROUP_CONCAT(DISTINCT g.grn_number) as grn_numbers,
@@ -7985,9 +8021,15 @@ api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (r
        LEFT JOIN projects p ON g.projectId = p.id
        LEFT JOIN grn_items gi ON g.id = gi.grn_id
        WHERE vi.is_deleted = FALSE
-       GROUP BY vi.id
-       ORDER BY vi.createdAt DESC`
-    );
+       GROUP BY vi.id`;
+
+    if (outstandingOnly) {
+      query += ` HAVING pending_amount > 0`;
+    }
+
+    query += ` ORDER BY vi.createdAt DESC`;
+
+    const [rows]: any = await pool.query(query);
     res.status(200).json(rows);
   } catch (error: any) {
     console.error('Error fetching vendor invoices:', error);
@@ -8229,21 +8271,52 @@ api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), asyn
         }
         const grnItemId = existingLine[0].grn_item_id;
 
+        // Derive quantity directly from the linked GRN item (total quantity minus billed on other invoices)
+        const [grnItemRows]: any = await connection.execute(
+          'SELECT quantity, item_name FROM grn_items WHERE id = ?',
+          [grnItemId]
+        );
+        if (grnItemRows.length === 0) {
+          throw new AppError('NOT_FOUND', 'GRN Item not found.', 404);
+        }
+        const grnQty = parseFloat(grnItemRows[0].quantity);
+
+        const [billedRows]: any = await connection.execute(
+          `SELECT SUM(vii.billed_quantity) as total_billed 
+           FROM vendor_invoice_items vii
+           JOIN vendor_invoices vi ON vii.vendor_invoice_id = vi.id
+           WHERE vii.grn_item_id = ? AND vi.is_deleted = FALSE AND vii.id != ?`,
+          [grnItemId, lineItemId]
+        );
+        const totalBilledOther = parseFloat(billedRows[0].total_billed || '0');
+        const grnDerivedQty = Math.max(0, grnQty - totalBilledOther);
+
+        // Validation: Reject if the client attempts to modify the quantity
+        if (billed_quantity !== undefined) {
+          const clientQty = parseFloat(billed_quantity);
+          if (Math.abs(clientQty - grnDerivedQty) > 0.0001) {
+            throw new AppError(
+              'BUSINESS_RULE_ERROR',
+              `Modifying item quantities on a Vendor Invoice is not allowed. Quantities must match the Goods Receipt Note (GRN). Expected: ${grnDerivedQty}, Received: ${clientQty}.`,
+              422
+            );
+          }
+        }
+
         // Validate quantity caps
-        await InvoiceValidator.validateQuantityCaps(connection, grnItemId, parseFloat(billed_quantity), lineItemId);
+        await InvoiceValidator.validateQuantityCaps(connection, grnItemId, grnDerivedQty, lineItemId);
 
         // Update line item details
         const gst = parseFloat(gst_amount || '0');
         const disc = parseFloat(discount_amount || '0');
         const rate = parseFloat(confirmed_rate);
-        const qty = parseFloat(billed_quantity);
-        const lineTotal = (qty * rate) + gst - disc;
+        const lineTotal = (grnDerivedQty * rate) + gst - disc;
 
         await connection.execute(
           `UPDATE vendor_invoice_items 
            SET billed_quantity = ?, confirmed_rate = ?, gst_amount = ?, discount_amount = ?, line_total = ?
            WHERE id = ?`,
-          [qty, rate, gst, disc, lineTotal, lineItemId]
+          [grnDerivedQty, rate, gst, disc, lineTotal, lineItemId]
         );
       }
     }
