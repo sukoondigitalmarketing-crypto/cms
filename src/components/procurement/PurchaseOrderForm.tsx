@@ -59,11 +59,15 @@ export function PurchaseOrderForm({ onClose, initialData, mode = 'CREATE' }: Pur
     const fetchData = async () => {
       try {
         const headers = { 'Authorization': `Bearer ${getAuthToken()}` };
+        const prUrl = initialData?.id
+          ? `${API_CONFIG.BASE_URL}/procurement/pr?eligible_for_po=true&exclude_po_id=${initialData.id}`
+          : `${API_CONFIG.BASE_URL}/procurement/pr?eligible_for_po=true`;
+
         const [projRes, vendRes, invRes, prRes, catRes] = await Promise.all([
           fetch(`${API_CONFIG.BASE_URL}/master/projects`, { headers }),
           fetch(`${API_CONFIG.BASE_URL}/master/vendors`, { headers }),
           fetch(`${API_CONFIG.BASE_URL}/inventory`, { headers }),
-          fetch(`${API_CONFIG.BASE_URL}/procurement/pr`, { headers }),
+          fetch(prUrl, { headers }),
           fetch(`${API_CONFIG.BASE_URL}/master/categories`, { headers })
         ]);
         const [projData, vendData, invData, prData, catData] = await Promise.all([

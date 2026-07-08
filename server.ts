@@ -6521,6 +6521,9 @@ async function logStatusHistory(
 
 api.get('/procurement/pr', authorizeAction('procurement', 'view'), async (req, res) => {
   const user = (req as any).user as Session;
+  const eligibleForPo = req.query.eligible_for_po === 'true';
+  const excludePoId = req.query.exclude_po_id ? parseInt(req.query.exclude_po_id as string, 10) : null;
+
   try {
     let query = `
       SELECT pr.*, p.name as project_name 
@@ -6529,6 +6532,29 @@ api.get('/procurement/pr', authorizeAction('procurement', 'view'), async (req, r
       WHERE pr.is_deleted = FALSE
     `;
     const params: any[] = [];
+
+    if (eligibleForPo) {
+      query += ` AND pr.status IN ('APPROVED', 'PO_CREATED', 'CONVERTED_TO_PO')`;
+      if (excludePoId && !isNaN(excludePoId)) {
+        query += ` AND NOT EXISTS (
+          SELECT 1 
+          FROM purchase_orders po 
+          WHERE po.linked_pr_id = pr.id 
+            AND po.is_deleted = FALSE 
+            AND po.po_status <> 'CANCELLED'
+            AND po.id <> ?
+        )`;
+        params.push(excludePoId);
+      } else {
+        query += ` AND NOT EXISTS (
+          SELECT 1 
+          FROM purchase_orders po 
+          WHERE po.linked_pr_id = pr.id 
+            AND po.is_deleted = FALSE 
+            AND po.po_status <> 'CANCELLED'
+        )`;
+      }
+    }
 
     query += ` ORDER BY pr.createdAt DESC`;
     const [rows] = await pool.execute(query, params);
