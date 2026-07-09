@@ -41,6 +41,8 @@ import { VendorInvoicesDashboard } from './components/VendorInvoicesDashboard';
 import { VendorPaymentsDashboard } from './components/VendorPaymentsDashboard';
 import { getAuthToken } from './services/api';
 import { hasPermission } from './rbac';
+import { ActivityCenterSlideOver } from './components/ActivityCenterSlideOver';
+import { ActivityLogsPage } from './components/ActivityLogsPage';
 
 export default function App() {
   const { user, isAuthReady, logout } = useAuth();
@@ -48,6 +50,37 @@ export default function App() {
   
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard'); 
+  const [activityCenterOpen, setActivityCenterOpen] = useState(false);
+
+  const handleNavigate = (url: string) => {
+    if (!url) return;
+    const path = url.split('?')[0];
+    const queryStr = url.split('?')[1];
+    
+    const tabMap: Record<string, string> = {
+      '/procurement': 'procurement',
+      '/grn': 'grn',
+      '/grns': 'grn',
+      '/inventory': 'inventory',
+      '/projects': 'projects',
+      '/approvals': 'approvals',
+      '/sales': 'sales',
+      '/contractor-payments': 'contractor-payments',
+      '/vendor-invoices': 'vendor-invoices',
+      '/vendor-payments': 'vendor-payments',
+      '/activity-logs': 'activity-logs'
+    };
+
+    const targetTab = tabMap[path];
+    if (targetTab) {
+      setActiveTab(targetTab);
+      if (queryStr) {
+        sessionStorage.setItem('activity_feed_nav_query', queryStr);
+        window.dispatchEvent(new CustomEvent('activity_feed_nav', { detail: queryStr }));
+      }
+    }
+  };
+
 
   useEffect(() => {
     if (isAuthReady && user?.role) {
@@ -112,6 +145,7 @@ export default function App() {
           <NavItem icon={<CreditCard />} label="Contractor Payments" isOpen={sidebarOpen} onClick={() => setActiveTab('contractor-payments')} active={activeTab === 'contractor-payments'} />
           <NavItem icon={<Receipt />} label="Vendor Invoices" isOpen={sidebarOpen} onClick={() => setActiveTab('vendor-invoices')} active={activeTab === 'vendor-invoices'} />
           <NavItem icon={<Wallet />} label="Vendor Payments" isOpen={sidebarOpen} onClick={() => setActiveTab('vendor-payments')} active={activeTab === 'vendor-payments'} />
+          <NavItem icon={<History />} label="Activity Logs" isOpen={sidebarOpen} onClick={() => setActiveTab('activity-logs')} active={activeTab === 'activity-logs'} />
         </nav>
         
         <div className="p-4 border-t border-slate-800">
@@ -155,7 +189,10 @@ export default function App() {
           </div>
           
           <div className="flex items-center space-x-4">
-            <button className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-full transition-colors">
+            <button 
+              onClick={() => setActivityCenterOpen(true)}
+              className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-full transition-colors"
+            >
               <Bell className="w-6 h-6" />
               <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
             </button>
@@ -188,12 +225,20 @@ export default function App() {
             <ReportsDashboard />
           ) : activeTab === 'procurement' ? (
             <ProcurementDashboard role={loggedInRole} />
+          ) : activeTab === 'activity-logs' ? (
+            <ActivityLogsPage onNavigate={handleNavigate} />
           ) : (
             <AdminDashboard />
           )}
 
         </div>
       </main>
+
+      <ActivityCenterSlideOver 
+        isOpen={activityCenterOpen} 
+        onClose={() => setActivityCenterOpen(false)} 
+        onNavigate={handleNavigate} 
+      />
     </div>
   );
 }

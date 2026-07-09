@@ -4,6 +4,7 @@ import { API_CONFIG, ROLE_PERMISSIONS } from '../config';
 import { validateApprovalForm } from '../services/validation';
 import { createAuthHeaders } from '../services/api';
 import { canApprove as canApproveModule, canDelete, hasPermission } from '../rbac';
+import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 
 interface ApprovalsDashboardProps {
   role: string;
@@ -76,21 +77,11 @@ export function ApprovalsDashboard({ role, userName, userUid }: ApprovalsDashboa
   const canManageApprovals = canApprove || canVoidApproval;
   const canViewApprovals = hasPermission(role, 'approvals', 'view');
 
-  useEffect(() => {
+  useAdaptivePolling(() => {
     fetchProjects();
     fetchApprovals();
     fetchContractors();
-
-    const projectInterval = setInterval(fetchProjects, 5000);
-    const approvalInterval = setInterval(fetchApprovals, 5000);
-    const contractorInterval = setInterval(fetchContractors, 10000);
-
-    return () => {
-      clearInterval(projectInterval);
-      clearInterval(approvalInterval);
-      clearInterval(contractorInterval);
-    };
-  }, [role, userUid]);
+  }, { delay: 30000 }, [role, userUid]);
 
   const fetchProjects = async () => {
     try {

@@ -4,6 +4,7 @@ import { API_CONFIG, ROLE_PERMISSIONS } from '../config';
 import { canEdit, hasPermission } from '../rbac';
 import { createAuthHeaders } from '../services/api';
 import { FilterBar } from './common/FilterBar';
+import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 
 interface InventoryDashboardProps {
   role: string;
@@ -170,11 +171,7 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
     }
   };
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [additionsFilters, issuesFilters]);
+  useAdaptivePolling(fetchData, { delay: 30000 }, [additionsFilters, issuesFilters]);
 
   const resetForm = () => {
     setItemName('');

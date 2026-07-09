@@ -5,6 +5,7 @@ import { hasPermission } from '../rbac';
 import { validateCustomerForm, validatePaymentForm } from '../services/validation';
 import { createAuthHeaders } from '../services/api';
 import { formatCurrency, formatCompactCurrency } from '../services/format';
+import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 
 interface SalesDashboardProps {
   role: string;
@@ -47,17 +48,10 @@ export function SalesDashboard({ role }: SalesDashboardProps) {
   const canManageSales = hasPermission(role, 'customers', 'view');
   const canManageLedger = hasPermission(role, 'customers', 'create') || hasPermission(role, 'customers', 'edit');
 
-  useEffect(() => {
+  useAdaptivePolling(() => {
     fetchCustomers();
     fetchLedger();
-    
-    const interval = setInterval(() => {
-      fetchCustomers();
-      fetchLedger();
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
+  }, { delay: 30000 });
 
   const fetchCustomers = async () => {
     try {

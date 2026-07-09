@@ -68,6 +68,53 @@ const ROLES = {
 type RbacModule = 'dashboard' | 'masters' | 'procurement' | 'inventory' | 'grn' | 'reports' | 'projects' | 'approvals' | 'customers' | 'contractor_payments' | 'rbac' | 'vendor_invoices' | 'vendor_payments';
 type RbacAction = 'view' | 'create' | 'edit' | 'delete' | 'approve' | 'cancel' | 'export' | 'rollback' | 'manage_users' | 'manage_rbac';
 
+export type ErpModule =
+  | 'procurement'
+  | 'inventory'
+  | 'grn'
+  | 'projects'
+  | 'approvals'
+  | 'customers'
+  | 'contractor_payments'
+  | 'rbac'
+  | 'vendor_invoices'
+  | 'vendor_payments';
+
+export type ErpAction =
+  | 'CREATE'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'APPROVE'
+  | 'CANCEL'
+  | 'REVERT'
+  | 'VOID'
+  | 'SUBMIT'
+  | 'ASSIGN'
+  | 'CLOSE';
+
+export interface ErpActivityActor {
+  userId?: number;
+  name?: string;
+  email: string;
+  role: string;
+}
+
+export interface ErpActivityChange {
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+export interface ErpActivityDetails {
+  recordNumber: string;
+  vendorName?: string;
+  projectName?: string;
+  amount?: number;
+  changes?: ErpActivityChange[];
+  remarks?: string;
+}
+
+
 function normalizeRole(role?: any): string {
   const candidate = String(role || '').trim().replace(/\s+/g, '_').toUpperCase();
   if (candidate === 'SALES') return ROLES.SALES;
@@ -736,6 +783,34 @@ async function initDB() {
         createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // ERP Activity Logs table (Activity Center v1.0)
+    await poolConnection.query(`
+      CREATE TABLE IF NOT EXISTS erp_activity_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        actor_user_id INT NULL,
+        actor_name_snapshot VARCHAR(255) NOT NULL,
+        actor_role_snapshot VARCHAR(80) NOT NULL,
+        module VARCHAR(100) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        entity_type VARCHAR(100) NOT NULL,
+        entity_id INT NULL,
+        project_id INT NULL,
+        vendor_id INT NULL,
+        target_url VARCHAR(255) NULL,
+        details JSON NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
+      )
+    `);
+
+    // Indexes for ERP Activity Logs
+    await addIndexSafe("CREATE INDEX idx_erp_activity_logs_created_at ON erp_activity_logs(created_at)");
+    await addIndexSafe("CREATE INDEX idx_erp_activity_logs_actor_user ON erp_activity_logs(actor_user_id)");
+    await addIndexSafe("CREATE INDEX idx_erp_activity_logs_project ON erp_activity_logs(project_id)");
+    await addIndexSafe("CREATE INDEX idx_erp_activity_logs_vendor ON erp_activity_logs(vendor_id)");
 
     // GRN Edit History table (Audit Governance)
     await poolConnection.query(`
@@ -3493,6 +3568,79 @@ api.get('/rbac/audit-logs', authorizeAction('rbac', 'manage_rbac'), async (_req,
   }
 });
 
+api.get('/erp/activity-logs', requireAuth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page as string, 10) || 1;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const offset = (page - 1) * limit;
+
+    const moduleFilter = req.query.module as string;
+    const actionFilter = req.query.action as string;
+    const fromDate = req.query.from_date as string;
+    const toDate = req.query.to_date as string;
+    const projectId = req.query.project_id as string;
+    const vendorId = req.query.vendor_id as string;
+    const vendorName = req.query.vendor as string;
+
+    let query = `
+      SELECT al.*, p.name as project_name, v.vendor_name 
+      FROM erp_activity_logs al
+      LEFT JOIN projects p ON al.project_id = p.id
+      LEFT JOIN vendors v ON al.vendor_id = v.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (moduleFilter) {
+      query += ` AND al.module = ?`;
+      params.push(moduleFilter);
+    }
+    if (actionFilter) {
+      query += ` AND al.action = ?`;
+      params.push(actionFilter);
+    }
+    if (projectId) {
+      query += ` AND al.project_id = ?`;
+      params.push(projectId);
+    }
+    if (vendorId) {
+      query += ` AND al.vendor_id = ?`;
+      params.push(vendorId);
+    } else if (vendorName) {
+      query += ` AND (v.vendor_name = ? OR al.details->>'$.vendorName' = ?)`;
+      params.push(vendorName, vendorName);
+    }
+    if (fromDate) {
+      query += ` AND al.created_at >= ?`;
+      params.push(`${fromDate} 00:00:00`);
+    }
+    if (toDate) {
+      query += ` AND al.created_at <= ?`;
+      params.push(`${toDate} 23:59:59`);
+    }
+
+    const countQuery = `SELECT COUNT(*) as total FROM (${query}) as temp`;
+    const [countRows]: any = await pool.execute(countQuery, params);
+    const total = countRows[0]?.total || 0;
+
+    query += ` ORDER BY al.created_at DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [rows]: any = await pool.execute(query, params);
+    res.json({
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch ERP activity logs' });
+  }
+});
+
 /**
  * USER-LEVEL PERMISSION OVERRIDES ENDPOINTS
  * Supports per-user customization of role-based defaults
@@ -4801,6 +4949,24 @@ api.post('/approvals', authorizeAction('approvals', 'create'), async (req, res) 
       [approval_code, title, type, amount, description || '', raised_by, raised_by_uid, raised_by_role, projectId, finalProjectName, vendorName || '', contractor_id || null, attachments || '']
     );
 
+    const user = (req as any).user as Session;
+    await logErpActivity(pool, {
+      actor: user || { email: raised_by, name: raised_by, role: raised_by_role, userId: undefined },
+      module: 'approvals',
+      action: 'CREATE',
+      entityType: 'APPROVAL',
+      entityId: result.insertId,
+      projectId: Number(projectId),
+      targetUrl: `/approvals?id=${result.insertId}`,
+      details: {
+        recordNumber: approval_code,
+        projectName: finalProjectName,
+        vendorName: vendorName || undefined,
+        amount: Number(amount),
+        remarks: title
+      }
+    });
+
     res.status(201).json({ id: result.insertId, message: 'Approval request created successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -4838,10 +5004,38 @@ api.put('/approvals/:id/status', authorizeAction('approvals', 'approve'), async 
   }
 
   try {
+    const [appRows]: any = await pool.execute(
+      'SELECT * FROM approvals WHERE id = ? AND is_deleted = FALSE',
+      [id]
+    );
+    if (appRows.length === 0) {
+      return res.status(404).json({ error: 'Approval request not found' });
+    }
+    const approval = appRows[0];
+
     await pool.execute(
       'UPDATE approvals SET status = ?, approved_by = ?, voidedBy = NULL, voidedAt = NULL WHERE id = ? AND is_deleted = FALSE',
       [status, approved_by || null, id]
     );
+
+    const user = (req as any).user as Session;
+    await logErpActivity(pool, {
+      actor: user,
+      module: 'approvals',
+      action: 'APPROVE',
+      entityType: 'APPROVAL',
+      entityId: Number(id),
+      projectId: approval.projectId,
+      targetUrl: `/approvals?id=${id}`,
+      details: {
+        recordNumber: approval.approval_code,
+        projectName: approval.projectName,
+        vendorName: approval.vendorName || undefined,
+        amount: Number(approval.amount),
+        remarks: `Approval request approved: ${approval.title}`
+      }
+    });
+
     res.status(200).json({ message: 'Approval status updated successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -4885,6 +5079,24 @@ api.post('/approval-requests/:id/void', authorizeAction('approvals', 'delete'), 
       'SELECT * FROM approvals WHERE id = ? AND is_deleted = FALSE',
       [id]
     );
+
+    const user = (req as any).user as Session;
+    await logErpActivity(pool, {
+      actor: user || session,
+      module: 'approvals',
+      action: 'VOID',
+      entityType: 'APPROVAL',
+      entityId: Number(id),
+      projectId: updatedRows[0].projectId,
+      targetUrl: `/approvals?id=${id}`,
+      details: {
+        recordNumber: updatedRows[0].approval_code,
+        projectName: updatedRows[0].projectName,
+        vendorName: updatedRows[0].vendorName || undefined,
+        amount: Number(updatedRows[0].amount),
+        remarks: 'Approval request voided'
+      }
+    });
 
     res.status(200).json({
       message: 'Approval request voided successfully',
@@ -5239,6 +5451,28 @@ api.post('/vendor-payments', authorizeAction('vendor_payments', 'create'), async
         );
       }
     }
+
+    const [vRow]: any = await connection.execute('SELECT vendor_name FROM vendors WHERE id = ?', [vendor_id]);
+    const vName = vRow[0]?.vendor_name || '';
+
+    const user = (req as any).user as Session;
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'vendor_payments',
+      action: 'CREATE',
+      entityType: 'PAYMENT',
+      entityId: paymentId,
+      projectId: Number(project_id),
+      vendorId: Number(vendor_id),
+      targetUrl: `/vendor-payments?id=${paymentId}`,
+      details: {
+        recordNumber: reference_no || `PAY-${paymentId}`,
+        vendorName: vName,
+        amount: Number(payment_amount),
+        remarks: remarks || 'Vendor payment recorded'
+      }
+    });
+
     await connection.commit();
     res.status(201).json({ id: paymentId, message: 'Payment recorded successfully' });
   } catch (error) {
@@ -5265,11 +5499,46 @@ api.put('/vendor-payments/:id', authorizeAction('vendor_payments', 'edit'), asyn
 
 api.delete('/vendor-payments/:id', authorizeAction('vendor_payments', 'delete'), async (req, res) => {
   const { id } = req.params;
+  const connection = await pool.getConnection();
   try {
-    await pool.execute('UPDATE vendor_payments SET is_deleted = TRUE WHERE id = ?', [id]);
+    await connection.beginTransaction();
+
+    const [payRows]: any = await connection.execute(
+      'SELECT vp.*, v.vendor_name FROM vendor_payments vp LEFT JOIN vendors v ON vp.vendor_id = v.id WHERE vp.id = ? FOR UPDATE',
+      [id]
+    );
+    if (payRows.length === 0) {
+      throw new Error('Payment not found');
+    }
+    const payment = payRows[0];
+
+    await connection.execute('UPDATE vendor_payments SET is_deleted = TRUE WHERE id = ?', [id]);
+
+    const user = (req as any).user as Session;
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'vendor_payments',
+      action: 'VOID',
+      entityType: 'PAYMENT',
+      entityId: Number(id),
+      projectId: payment.project_id,
+      vendorId: payment.vendor_id,
+      targetUrl: `/vendor-payments?id=${id}`,
+      details: {
+        recordNumber: payment.reference_no || `PAY-${id}`,
+        vendorName: payment.vendor_name,
+        amount: parseFloat(payment.payment_amount),
+        remarks: 'Vendor payment voided'
+      }
+    });
+
+    await connection.commit();
     res.status(200).json({ message: 'Payment deleted successfully' });
-  } catch (error) {
+  } catch (error: any) {
+    if (connection) await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -6517,6 +6786,50 @@ async function logStatusHistory(
   );
 }
 
+export async function logErpActivity(
+  connection: mysql.PoolConnection | mysql.Pool,
+  params: {
+    actor: ErpActivityActor;
+    module: ErpModule;
+    action: ErpAction;
+    entityType: string;
+    entityId: number | null;
+    projectId?: number | null;
+    vendorId?: number | null;
+    targetUrl?: string | null;
+    details: ErpActivityDetails;
+  }
+) {
+  const actorUserId = params.actor.userId || null;
+  const actorName = params.actor.name || params.actor.email;
+  const actorRole = params.actor.role;
+
+  try {
+    await connection.execute(
+      `INSERT INTO erp_activity_logs (
+        actor_user_id, actor_name_snapshot, actor_role_snapshot,
+        module, action, entity_type, entity_id, project_id, vendor_id, target_url, details
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        actorUserId,
+        actorName,
+        actorRole,
+        params.module,
+        params.action,
+        params.entityType,
+        params.entityId,
+        params.projectId || null,
+        params.vendorId || null,
+        params.targetUrl || null,
+        params.details ? JSON.stringify(params.details) : null
+      ]
+    );
+  } catch (error: any) {
+    console.error('❌ Failed to log ERP Activity:', error.message);
+  }
+}
+
+
 // 1. PURCHASE REQUESTS (PR)
 
 api.get('/procurement/pr', authorizeAction('procurement', 'view'), async (req, res) => {
@@ -6629,6 +6942,19 @@ api.post('/procurement/pr', authorizeAction('procurement', 'create'), async (req
 
     await logProcurementAction(connection, 'PR', prId, 'CREATED_DRAFT', user, 'PR created as draft');
     await logStatusHistory(connection, 'PR', prId, null, PR_STATUS.DRAFT, user, 'Requirement intent draft created');
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'procurement',
+      action: 'CREATE',
+      entityType: 'PR',
+      entityId: prId,
+      projectId: finalProjectId,
+      targetUrl: `/procurement?tab=pr&id=${prId}`,
+      details: {
+        recordNumber: prNumber,
+        remarks: 'PR created as draft'
+      }
+    });
     
     await connection.commit();
     res.status(201).json({ id: prId, pr_number: prNumber, message: 'PR draft created successfully' });
@@ -6662,7 +6988,7 @@ api.put('/procurement/pr/:id', authorizeAction('procurement', 'edit'), async (re
   try {
     await connection.beginTransaction();
 
-    const [oldPr]: any = await connection.execute('SELECT status FROM purchase_requests WHERE id = ? FOR UPDATE', [id]);
+    const [oldPr]: any = await connection.execute('SELECT pr_number, status FROM purchase_requests WHERE id = ? FOR UPDATE', [id]);
     if (oldPr.length === 0) throw new Error('PR not found');
     const currentStatus = normalizeProcurementStatus(oldPr[0].status);
     if (currentStatus !== PR_STATUS.DRAFT && currentStatus !== PR_STATUS.RETURNED) {
@@ -6685,6 +7011,19 @@ api.put('/procurement/pr/:id', authorizeAction('procurement', 'edit'), async (re
     }
 
     await logProcurementAction(connection, 'PR', Number(id), 'EDITED', user, 'PR draft updated');
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'procurement',
+      action: 'UPDATE',
+      entityType: 'PR',
+      entityId: Number(id),
+      projectId: finalProjectId,
+      targetUrl: `/procurement?tab=pr&id=${id}`,
+      details: {
+        recordNumber: oldPr[0].pr_number,
+        remarks: 'PR draft updated'
+      }
+    });
 
     await connection.commit();
     res.status(200).json({ message: 'PR updated successfully' });
@@ -6704,7 +7043,7 @@ api.post('/procurement/pr/:id/submit', authorizeAction('procurement', 'create'),
   try {
     await connection.beginTransaction();
 
-    const [oldPr]: any = await connection.execute('SELECT pr_number, status FROM purchase_requests WHERE id = ? FOR UPDATE', [id]);
+    const [oldPr]: any = await connection.execute('SELECT pr_number, status, project_id FROM purchase_requests WHERE id = ? FOR UPDATE', [id]);
     if (oldPr.length === 0) throw new Error('PR not found');
     const currentStatus = normalizeProcurementStatus(oldPr[0].status);
     if (currentStatus !== PR_STATUS.DRAFT && currentStatus !== PR_STATUS.RETURNED) {
@@ -6715,6 +7054,19 @@ api.post('/procurement/pr/:id/submit', authorizeAction('procurement', 'create'),
 
     await logProcurementAction(connection, 'PR', Number(id), 'SUBMITTED', user, 'Submitted for CEO Approval');
     await logStatusHistory(connection, 'PR', Number(id), oldPr[0].status, PR_STATUS.PENDING_APPROVAL, user, 'Submitted for CEO approval');
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'procurement',
+      action: 'SUBMIT',
+      entityType: 'PR',
+      entityId: Number(id),
+      projectId: oldPr[0].project_id,
+      targetUrl: `/procurement?tab=pr&id=${id}`,
+      details: {
+        recordNumber: oldPr[0].pr_number,
+        remarks: 'Submitted for CEO approval'
+      }
+    });
     
     // Notifications and Generic Auditing
     console.log(`[NOTIFICATION] PR SUBMITTED: PR #${oldPr[0].pr_number} submitted for CEO approval by ${user.email}`);
@@ -6767,6 +7119,19 @@ api.put('/procurement/pr/:id/status', authorizeAction('procurement', 'approve'),
       await connection.execute(`UPDATE purchase_requests SET status = ? WHERE id = ?`, [nextStatus, prDbId]);
       await logProcurementAction(connection, 'PR', prDbId, 'REJECTED', user, remarks || 'PR rejected by CEO');
       await logStatusHistory(connection, 'PR', prDbId, pr.status, nextStatus, user, remarks || 'Requirement intent rejected by CEO');
+      await logErpActivity(connection, {
+        actor: user,
+        module: 'approvals',
+        action: 'CANCEL',
+        entityType: 'PR',
+        entityId: prDbId,
+        projectId: pr.project_id,
+        targetUrl: `/procurement?tab=pr&id=${prDbId}`,
+        details: {
+          recordNumber: pr.pr_number,
+          remarks: remarks || 'PR rejected by CEO'
+        }
+      });
       
       console.log(`[NOTIFICATION] PR REJECTED: PR #${pr.pr_number} has been rejected by CEO ${user.email}`);
       await connection.execute(
@@ -6779,6 +7144,19 @@ api.put('/procurement/pr/:id/status', authorizeAction('procurement', 'approve'),
       await connection.execute(`UPDATE purchase_requests SET status = ? WHERE id = ?`, [nextStatus, prDbId]);
       await logProcurementAction(connection, 'PR', prDbId, 'RETURNED', user, remarks || 'PR returned for correction');
       await logStatusHistory(connection, 'PR', prDbId, pr.status, nextStatus, user, remarks || 'Requirement intent returned for correction');
+      await logErpActivity(connection, {
+        actor: user,
+        module: 'approvals',
+        action: 'REVERT',
+        entityType: 'PR',
+        entityId: prDbId,
+        projectId: pr.project_id,
+        targetUrl: `/procurement?tab=pr&id=${prDbId}`,
+        details: {
+          recordNumber: pr.pr_number,
+          remarks: remarks || 'PR returned for correction'
+        }
+      });
       
       console.log(`[NOTIFICATION] PR RETURNED: PR #${pr.pr_number} has been returned by CEO ${user.email}`);
       await connection.execute(
@@ -6792,6 +7170,19 @@ api.put('/procurement/pr/:id/status', authorizeAction('procurement', 'approve'),
       await connection.execute(`UPDATE purchase_requests SET status = ? WHERE id = ?`, [nextStatus, prDbId]);
       await logProcurementAction(connection, 'PR', prDbId, 'APPROVED', user, remarks || 'PR approved by CEO');
       await logStatusHistory(connection, 'PR', prDbId, pr.status, nextStatus, user, remarks || 'Requirement intent approved by CEO');
+      await logErpActivity(connection, {
+        actor: user,
+        module: 'approvals',
+        action: 'APPROVE',
+        entityType: 'PR',
+        entityId: prDbId,
+        projectId: pr.project_id,
+        targetUrl: `/procurement?tab=pr&id=${prDbId}`,
+        details: {
+          recordNumber: pr.pr_number,
+          remarks: remarks || 'PR approved by CEO'
+        }
+      });
 
       console.log(`[NOTIFICATION] PR APPROVED: PR #${pr.pr_number} has been approved by CEO ${user.email}`);
       await connection.execute(
@@ -6840,6 +7231,20 @@ api.put('/procurement/pr/:id/status', authorizeAction('procurement', 'approve'),
 
       await logProcurementAction(connection, 'PO', poId, 'DRAFT_CREATED', user, 'Draft PO shell created from approved PR for Procurement Manager action');
       await logStatusHistory(connection, 'PO', poId, null, PO_STATUS.DRAFT, user, 'PR_APPROVED event created draft PO shell');
+      await logErpActivity(connection, {
+        actor: user,
+        module: 'procurement',
+        action: 'CREATE',
+        entityType: 'PO',
+        entityId: poId,
+        projectId: pr.project_id,
+        vendorId: placeholderVendorId,
+        targetUrl: `/procurement?tab=po&id=${poId}`,
+        details: {
+          recordNumber: poNumber,
+          remarks: `Draft PO shell created from approved PR #${pr.pr_number}`
+        }
+      });
 
       console.log(`[NOTIFICATION] DRAFT PO SHELL GENERATED: PO #${poNumber} created in DRAFT state from PR #${pr.pr_number} for Procurement Manager finalization`);
       await connection.execute(
@@ -7053,6 +7458,20 @@ api.post('/procurement/po', authorizeAction('procurement', 'create'), async (req
         if (existingStatus !== PO_STATUS.VENDOR_ASSIGNED) {
           await logStatusHistory(connection, 'PO', existingPo.id, existingStatus, PO_STATUS.VENDOR_ASSIGNED, user, 'Existing draft PO synchronized from approved PR selection');
         }
+        await logErpActivity(connection, {
+          actor: user,
+          module: 'procurement',
+          action: 'UPDATE',
+          entityType: 'PO',
+          entityId: existingPo.id,
+          projectId: finalProjectId,
+          vendorId: vendor_id,
+          targetUrl: `/procurement?tab=po&id=${existingPo.id}`,
+          details: {
+            recordNumber: existingPo.po_number,
+            remarks: 'Existing draft PO synchronized from approved PR selection'
+          }
+        });
 
         await connection.commit();
         return res.status(200).json({
@@ -7091,6 +7510,20 @@ api.post('/procurement/po', authorizeAction('procurement', 'create'), async (req
 
     await logProcurementAction(connection, 'PO', poId, 'CREATED', user, `PO created ${linked_pr_id ? 'from PR' : 'manually'}`);
     await logStatusHistory(connection, 'PO', poId, null, PO_STATUS.VENDOR_ASSIGNED, user, 'Vendor assigned for procurement communication');
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'procurement',
+      action: 'CREATE',
+      entityType: 'PO',
+      entityId: poId,
+      projectId: finalProjectId,
+      vendorId: vendor_id,
+      targetUrl: `/procurement?tab=po&id=${poId}`,
+      details: {
+        recordNumber: poNumber,
+        remarks: `PO created ${linked_pr_id ? 'from PR' : 'manually'}`
+      }
+    });
 
     await connection.commit();
     res.status(201).json({ id: poId, po_number: poNumber, message: 'PO created successfully' });
@@ -7170,6 +7603,21 @@ api.put('/procurement/po/:id', authorizeAction('procurement', 'edit'), async (re
           [user.email, 'VENDOR_ASSIGNED', JSON.stringify({ po_id: id, po_number: po.po_number, vendor_id, vendor_name: newVendorName })]
         );
         await logProcurementAction(connection, 'PO', Number(id), 'VENDOR_ASSIGNED', user, `Vendor assigned: ${newVendorName}`);
+        await logErpActivity(connection, {
+          actor: user,
+          module: 'procurement',
+          action: 'ASSIGN',
+          entityType: 'PO',
+          entityId: Number(id),
+          projectId: po.project_id,
+          vendorId: Number(vendor_id),
+          targetUrl: `/procurement?tab=po&id=${id}`,
+          details: {
+            recordNumber: po.po_number,
+            vendorName: newVendorName,
+            remarks: `Vendor ${newVendorName} assigned to PO`
+          }
+        });
       } else {
         console.log(`[NOTIFICATION] VENDOR CHANGED: Vendor on PO #${po.po_number} changed from ${oldVendorName} to ${newVendorName} by ${user.email}`);
         await connection.execute(
@@ -7177,6 +7625,21 @@ api.put('/procurement/po/:id', authorizeAction('procurement', 'edit'), async (re
           [user.email, 'VENDOR_CHANGED', JSON.stringify({ po_id: id, po_number: po.po_number, old_vendor: oldVendorName, new_vendor: newVendorName })]
         );
         await logProcurementAction(connection, 'PO', Number(id), 'VENDOR_CHANGED', user, `Vendor changed from ${oldVendorName} to ${newVendorName}`);
+        await logErpActivity(connection, {
+          actor: user,
+          module: 'procurement',
+          action: 'ASSIGN',
+          entityType: 'PO',
+          entityId: Number(id),
+          projectId: po.project_id,
+          vendorId: Number(vendor_id),
+          targetUrl: `/procurement?tab=po&id=${id}`,
+          details: {
+            recordNumber: po.po_number,
+            vendorName: newVendorName,
+            remarks: `Vendor on PO changed from ${oldVendorName} to ${newVendorName}`
+          }
+        });
       }
     }
 
@@ -7203,9 +7666,39 @@ api.put('/procurement/po/:id', authorizeAction('procurement', 'edit'), async (re
       );
       await logProcurementAction(connection, 'PO', Number(id), 'SENT_TO_VENDOR', user, 'PO finalized as vendor communication document');
       await logStatusHistory(connection, 'PO', Number(id), po.po_status, PO_STATUS.SENT_TO_VENDOR, user, 'PO_FINALIZED event: vendor communication document issued');
+      await logErpActivity(connection, {
+        actor: user,
+        module: 'procurement',
+        action: 'CLOSE',
+        entityType: 'PO',
+        entityId: Number(id),
+        projectId: po.project_id,
+        vendorId: Number(vendor_id),
+        targetUrl: `/procurement?tab=po&id=${id}`,
+        details: {
+          recordNumber: po.po_number,
+          remarks: 'PO finalized and sent to vendor'
+        }
+      });
     } else {
       // Just a standard edit update
       await logProcurementAction(connection, 'PO', Number(id), 'EDITED', user, 'Draft PO updated');
+      if (!vendorChanged) {
+        await logErpActivity(connection, {
+          actor: user,
+          module: 'procurement',
+          action: 'UPDATE',
+          entityType: 'PO',
+          entityId: Number(id),
+          projectId: po.project_id,
+          vendorId: Number(vendor_id),
+          targetUrl: `/procurement?tab=po&id=${id}`,
+          details: {
+            recordNumber: po.po_number,
+            remarks: 'Draft PO updated'
+          }
+        });
+      }
     }
 
     await connection.commit();
@@ -7636,6 +8129,23 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
     }
 
     await logStatusHistory(connection, 'GRN', grnId, null, GRN_STATUS.POSTED, user, 'GRN_POSTED event created inventory batches and FIFO valuation');
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'grn',
+      action: 'CREATE',
+      entityType: 'GRN',
+      entityId: grnId,
+      projectId: projectId || null,
+      vendorId: resolvedVendorId,
+      targetUrl: `/grn?id=${grnId}`,
+      details: {
+        recordNumber: grn_number,
+        projectName: projectName,
+        vendorName: vendorName,
+        amount: computedFinalAmount,
+        remarks: remarks || 'GRN posted'
+      }
+    });
 
     await connection.commit();
     res.status(201).json({ id: grnId, grn_number, message: 'GRN created and stock updated successfully' });
@@ -7672,7 +8182,7 @@ api.post('/grns/:id/cancel', authorizeAction('grn', 'cancel'), async (req, res) 
 
     // 1. Verify status and fetch destination_type
     const [grnRows]: any = await connection.execute(
-      'SELECT status, grn_number, destination_type, po_id FROM grns WHERE id = ? FOR UPDATE', 
+      'SELECT status, grn_number, destination_type, po_id, projectId, vendor_id, total_amount, vendorName FROM grns WHERE id = ? FOR UPDATE', 
       [id]
     );
     if (grnRows.length === 0) throw new Error('GRN not found');
@@ -7747,6 +8257,22 @@ api.post('/grns/:id/cancel', authorizeAction('grn', 'cancel'), async (req, res) 
     }
 
     await logStatusHistory(connection, 'GRN', Number(id), grnRows[0].status, GRN_STATUS.CANCELLED, (req as any).user, reason);
+    await logErpActivity(connection, {
+      actor: (req as any).user as Session,
+      module: 'grn',
+      action: 'CANCEL',
+      entityType: 'GRN',
+      entityId: Number(id),
+      projectId: grnRows[0].projectId || null,
+      vendorId: grnRows[0].vendor_id || null,
+      targetUrl: `/grn?id=${id}`,
+      details: {
+        recordNumber: grn_number,
+        vendorName: grnRows[0].vendorName,
+        amount: parseFloat(grnRows[0].total_amount || '0'),
+        remarks: reason || 'GRN cancelled'
+      }
+    });
 
     await connection.commit();
     res.status(200).json({ message: 'GRN successfully cancelled and associated records reversed.' });
@@ -8194,6 +8720,27 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       [calculatedRefAmount, variance, invoiceId]
     );
 
+    const [grnProject]: any = await connection.execute('SELECT projectId FROM grns WHERE id = ?', [grn_ids[0]]);
+    const invoiceProjectId = grnProject[0]?.projectId || null;
+
+    const user = (req as any).user as Session;
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'vendor_invoices',
+      action: 'CREATE',
+      entityType: 'INVOICE',
+      entityId: invoiceId,
+      projectId: invoiceProjectId,
+      vendorId: Number(vendor_id),
+      targetUrl: `/vendor-invoices?id=${invoiceId}`,
+      details: {
+        recordNumber: invoice_number,
+        vendorName: vendor.vendor_name,
+        amount: parseFloat(invoice_amount),
+        remarks: remarks || 'Draft invoice created'
+      }
+    });
+
     await connection.commit();
     res.status(201).json({ id: invoiceId, message: 'Draft Vendor Invoice created successfully.' });
   } catch (error: any) {
@@ -8430,6 +8977,27 @@ api.post('/vendor-invoices/:id/confirm', authorizeAction('vendor_invoices', 'app
       'INSERT INTO audit_logs (actor, action, details) VALUES (?, ?, ?)',
       [confirmedBy, 'CONFIRM_INVOICE', JSON.stringify({ invoice_id: id, previous_status: 'DRAFT', new_status: 'CONFIRMED' })]
     );
+
+    const [grnProject]: any = await connection.execute('SELECT projectId FROM grns WHERE id = ?', [grnIds[0]]);
+    const invoiceProjectId = grnProject[0]?.projectId || null;
+
+    const user = (req as any).user as Session;
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'vendor_invoices',
+      action: 'APPROVE',
+      entityType: 'INVOICE',
+      entityId: Number(id),
+      projectId: invoiceProjectId,
+      vendorId: invoice.vendor_id,
+      targetUrl: `/vendor-invoices?id=${id}`,
+      details: {
+        recordNumber: invoice.invoice_number,
+        vendorName: invoice.vendor_name_snapshot,
+        amount: parseFloat(invoice.invoice_amount),
+        remarks: 'Invoice confirmed'
+      }
+    });
 
     await connection.commit();
     res.status(200).json({ success: true, message: 'Vendor Invoice confirmed successfully.' });
@@ -8828,6 +9396,27 @@ api.post('/vendor-invoices/:id/finalize', authorizeAction('vendor_invoices', 'ap
         })
       ]
     );
+
+    const [grnProject]: any = await connection.execute('SELECT g.projectId FROM vendor_invoice_grns vig JOIN grns g ON vig.grn_id = g.id WHERE vig.vendor_invoice_id = ? LIMIT 1', [id]);
+    const invoiceProjectId = grnProject[0]?.projectId || null;
+
+    const user = (req as any).user as Session;
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'vendor_invoices',
+      action: 'APPROVE',
+      entityType: 'INVOICE',
+      entityId: Number(id),
+      projectId: invoiceProjectId,
+      vendorId: invoice.vendor_id,
+      targetUrl: `/vendor-invoices?id=${id}`,
+      details: {
+        recordNumber: invoice.invoice_number,
+        vendorName: invoice.vendor_name_snapshot,
+        amount: parseFloat(invoice.invoice_amount),
+        remarks: 'Invoice rates finalized and revalued'
+      }
+    });
 
     await connection.commit();
     res.status(200).json({ success: true, message: 'Vendor Invoice finalized and revalued successfully.' });
