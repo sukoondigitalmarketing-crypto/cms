@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import net from 'net';
+import { allocateFifoBatches, valueFifoAllocations } from './fifoEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3897,6 +3898,72 @@ api.get('/inventory/:id/batches', async (req, res) => {
   }
 });
 
+api.post('/inventory/issue-estimate', authorizeAction('inventory', 'view'), async (req, res) => {
+  const { voucher } = req.body;
+  if (!voucher || !voucher.items || !Array.isArray(voucher.items)) {
+    return res.status(400).json({ error: 'Request body must contain a voucher object with items array' });
+  }
+
+  const estimates: any[] = [];
+
+  try {
+    for (const item of voucher.items) {
+      const inventoryId = Number(item.inventory_id);
+      const qty = parseFloat(item.quantity || '0');
+
+      if (isNaN(inventoryId) || isNaN(qty) || qty <= 0) {
+        estimates.push({
+          inventory_id: item.inventory_id,
+          error: 'Invalid inventory_id or quantity'
+        });
+        continue;
+      }
+
+      const [batches]: any = await pool.execute(
+        'SELECT * FROM inventory_batches WHERE inventory_id = ? AND quantity_remaining > 0 AND is_void = FALSE ORDER BY received_date ASC, id ASC',
+        [inventoryId]
+      );
+
+      const [invRows]: any = await pool.execute(
+        'SELECT quantity FROM inventory WHERE id = ?',
+        [inventoryId]
+      );
+
+      if (invRows.length === 0) {
+        estimates.push({
+          inventory_id: inventoryId,
+          error: 'Item not found'
+        });
+        continue;
+      }
+
+      const allocations = allocateFifoBatches(batches, qty);
+      const costing = valueFifoAllocations(allocations, qty);
+
+      estimates.push({
+        inventory_id: inventoryId,
+        requested_quantity: qty,
+        available_quantity: parseFloat(invRows[0].quantity || '0'),
+        expected_issue_rate: costing.expectedIssueRate,
+        expected_total_cost: costing.totalCost,
+        remaining_unfulfilled: costing.remainingUnfulfilled,
+        batches: costing.allocations.map(a => ({
+          batch_id: a.batchId,
+          batch_number: a.batchNumber,
+          quantity_allocated: a.quantityAllocated,
+          rate: a.unitRate,
+          cost: a.allocatedCost,
+          is_confirmed: a.isConfirmed
+        }))
+      });
+    }
+
+    res.status(200).json({ estimates });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // INVENTORY ROUTES
 // ═══════════════════════════════════════════════════════════════
@@ -4133,37 +4200,23 @@ api.post('/inventory/issue', authorizeAction('inventory', 'create'), async (req,
       [inventory_id]
     );
 
+    const allocations = allocateFifoBatches(batches, totalRequestedQty);
+    const costing = valueFifoAllocations(allocations, totalRequestedQty);
+
+    if (costing.remainingUnfulfilled > 0) {
+      throw new Error('Critical Error: Failed to find enough stock in batches despite master quantity check.');
+    }
+
     const issueDate = issue_date || new Date().toISOString().split('T')[0];
-    let remainingToIssue = totalRequestedQty;
-    let totalCostOfIssue = 0;
     const usedBatches = [];
 
-    for (const batch of batches) {
-      if (remainingToIssue <= 0) break;
-
-      const batchQtyRemaining = parseFloat(batch.quantity_remaining);
-      const batchValueRemaining = parseFloat(batch.total_value_remaining);
-      const qtyFromThisBatch = Math.min(remainingToIssue, batchQtyRemaining);
-      
-      let costFromThisBatch = 0;
-
-      // 📊 ERP Value-First Issue Rule
-      if (qtyFromThisBatch === batchQtyRemaining) {
-        // Final Issue: Exhaust the batch completely to zero
-        costFromThisBatch = batchValueRemaining;
-      } else {
-        // Proportional Issue: Consume value based on quantity fraction
-        // We use the stored unit_price (high precision) for proportional consumption
-        costFromThisBatch = qtyFromThisBatch * parseFloat(batch.unit_price);
-      }
-
-      totalCostOfIssue += costFromThisBatch;
-      remainingToIssue -= qtyFromThisBatch;
+    for (const alloc of costing.allocations) {
+      const originalBatch = batches.find(b => b.id === alloc.batchId);
 
       // Update the batch: Deduct both quantity AND value
       await connection.execute(
         'UPDATE inventory_batches SET quantity_remaining = quantity_remaining - ?, total_value_remaining = total_value_remaining - ? WHERE id = ?',
-        [qtyFromThisBatch, costFromThisBatch, batch.id]
+        [alloc.quantityAllocated, alloc.allocatedCost, alloc.batchId]
       );
 
       // 4. Record the issue layer (Normalization Reform)
@@ -4177,38 +4230,34 @@ api.post('/inventory/issue', authorizeAction('inventory', 'create'), async (req,
         [
           inventory_id, 
           item.item_name, 
-          qtyFromThisBatch, 
-          costFromThisBatch, 
-          JSON.stringify([{ ...batch, quantity: qtyFromThisBatch, cost: costFromThisBatch }]), 
+          alloc.quantityAllocated, 
+          alloc.allocatedCost, 
+          JSON.stringify([{ ...originalBatch, quantity: alloc.quantityAllocated, cost: alloc.allocatedCost }]), 
           project_id || null, 
           finalProjectName, 
           issued_to, 
           issued_by, 
           issueDate, 
           remarks,
-          batch.grn_id || null,
-          batch.batch_number // Using batch_number as the GRN source identifier
+          originalBatch.grn_id || null,
+          originalBatch.batch_number // Using batch_number as the GRN source identifier
         ]
       );
 
       usedBatches.push({
-        batch_id: batch.id,
-        batch_number: batch.batch_number,
-        quantity: qtyFromThisBatch,
-        unit_price: batch.unit_price,
-        cost: costFromThisBatch
+        batch_id: alloc.batchId,
+        batch_number: alloc.batchNumber,
+        quantity: alloc.quantityAllocated,
+        unit_price: originalBatch.unit_price,
+        cost: alloc.allocatedCost
       });
-    }
-
-    if (remainingToIssue > 0) {
-      throw new Error('Critical Error: Failed to find enough stock in batches despite master quantity check.');
     }
 
     // 3. Update Inventory Master (SYNC WITH BATCHES)
     await syncInventoryFromBatches(connection, inventory_id);
 
     await connection.commit();
-    res.status(201).json({ message: 'Material issued successfully (FIFO Applied)', total_cost: totalCostOfIssue });
+    res.status(201).json({ message: 'Material issued successfully (FIFO Applied)', total_cost: costing.totalCost });
   } catch (error: any) {
     await connection.rollback();
     res.status(400).json({ error: error.message });
@@ -4277,30 +4326,20 @@ api.post('/inventory/voucher', authorizeAction('inventory', 'create'), async (re
         [inventory_id]
       );
 
-      let remaining = qtyToIssue;
-      let itemTotalCost = 0;
+      const allocations = allocateFifoBatches(batches, qtyToIssue);
+      const costing = valueFifoAllocations(allocations, qtyToIssue);
 
-      for (const batch of batches) {
-        if (remaining <= 0) break;
+      if (costing.remainingUnfulfilled > 0) {
+        throw new Error(`Critical: Failed to fulfill FIFO for ${invItem.item_name}`);
+      }
 
-        const batchQty = parseFloat(batch.quantity_remaining);
-        const batchVal = parseFloat(batch.total_value_remaining);
-        const take = Math.min(remaining, batchQty);
-        
-        let cost = 0;
-        if (take === batchQty) {
-          cost = batchVal; // Value-First Rule
-        } else {
-          cost = take * parseFloat(batch.unit_price);
-        }
-
-        itemTotalCost += cost;
-        remaining -= take;
+      for (const alloc of costing.allocations) {
+        const originalBatch = batches.find(b => b.id === alloc.batchId);
 
         // Update Batch
         await connection.execute(
           'UPDATE inventory_batches SET quantity_remaining = quantity_remaining - ?, total_value_remaining = total_value_remaining - ? WHERE id = ?',
-          [take, cost, batch.id]
+          [alloc.quantityAllocated, alloc.allocatedCost, alloc.batchId]
         );
 
         // Stage 6 Fix (Bug 3): When issuing from a GRN whose invoice has already been
@@ -4309,13 +4348,13 @@ api.post('/inventory/voucher', authorizeAction('inventory', 'create'), async (re
         // will never revisit this newly-created record.
         let grnConfirmedRate: number | null = null;
         let grnRateStatus: string = 'ESTIMATED';
-        if (batch.grn_id) {
+        if (originalBatch.grn_id) {
           const [grnItemRow]: any = await connection.execute(
             `SELECT gi.confirmed_rate, gi.rate_status
              FROM grn_items gi
              WHERE gi.grn_id = ? AND gi.inventory_id = ?
              LIMIT 1`,
-            [batch.grn_id, inventory_id]
+            [originalBatch.grn_id, inventory_id]
           );
           if (grnItemRow.length > 0) {
             grnRateStatus = grnItemRow[0].rate_status;
@@ -4324,15 +4363,15 @@ api.post('/inventory/voucher', authorizeAction('inventory', 'create'), async (re
               : null;
           }
         }
-        const estimatedUnitCost = parseFloat(batch.unit_price);
-        const estimatedTotalCost = cost;
+        const estimatedUnitCost = parseFloat(originalBatch.unit_price);
+        const estimatedTotalCost = alloc.allocatedCost;
 
         // Approved Design B Business Rule:
         // If the source GRN has already been financially finalized, use the confirmed rate.
         // Otherwise, initialize confirmed_unit_cost & confirmed_total_cost using the estimated values.
         // The Financial Truth engine will later overwrite these with actual values during finalization.
         const confirmedUnitCost = grnConfirmedRate !== null ? grnConfirmedRate : estimatedUnitCost;
-        const confirmedTotalCost = grnConfirmedRate !== null ? (take * grnConfirmedRate) : estimatedTotalCost;
+        const confirmedTotalCost = grnConfirmedRate !== null ? (alloc.quantityAllocated * grnConfirmedRate) : estimatedTotalCost;
 
         // Create Line Item entry for this batch layer (GRN Traceability)
         await connection.execute(
@@ -4345,23 +4384,21 @@ api.post('/inventory/voucher', authorizeAction('inventory', 'create'), async (re
             voucherId,
             inventory_id,
             invItem.item_name,
-            take,
+            alloc.quantityAllocated,
             invItem.unit,
-            cost,
+            alloc.allocatedCost,
             estimatedUnitCost,
             confirmedUnitCost,
             estimatedTotalCost,
             confirmedTotalCost,
-            JSON.stringify([{ ...batch, quantity: take, cost: cost }]),
-            batch.grn_id,
-            batch.batch_number
+            JSON.stringify([{ ...originalBatch, quantity: alloc.quantityAllocated, cost: alloc.allocatedCost }]),
+            originalBatch.grn_id,
+            originalBatch.batch_number
           ]
         );
       }
 
-      if (remaining > 0) throw new Error(`Critical: Failed to fulfill FIFO for ${invItem.item_name}`);
-
-      grandTotalValuation += itemTotalCost;
+      grandTotalValuation += costing.totalCost;
       inventoryToSync.add(inventory_id);
     }
 

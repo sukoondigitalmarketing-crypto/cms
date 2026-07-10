@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, ArrowDownRight, Search, X, Edit, Trash2 } from 'lucide-react';
 import { API_CONFIG, ROLE_PERMISSIONS } from '../config';
 import { canEdit, hasPermission } from '../rbac';
@@ -52,7 +52,15 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
   const [qtyError, setQtyError] = useState<string | null>(null);
 
   // 📝 Multi-Item Voucher State
-  const [voucherItems, setVoucherItems] = useState<{inventory_id: string, quantity_issued: string}[]>([]);
+  const [voucherItems, setVoucherItems] = useState<{
+    inventory_id: string;
+    quantity_issued: string;
+    expected_issue_rate?: number;
+    expected_total_cost?: number;
+    remaining_unfulfilled?: number;
+  }[]>([]);
+  const estimateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [selectedVoucher, setSelectedVoucher] = useState<any>(null);
   const [isVoucherDetailOpen, setIsVoucherDetailOpen] = useState(false);
@@ -185,7 +193,84 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
     setEditingItem(null);
   };
 
+  const triggerBatchEstimate = (updatedItems: typeof voucherItems) => {
+    // Cancel any pending debounced triggers
+    if (estimateTimeoutRef.current) {
+      clearTimeout(estimateTimeoutRef.current);
+    }
+
+    // Debounce the call (400ms)
+    estimateTimeoutRef.current = setTimeout(async () => {
+      // Abort any ongoing request
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      const validItems = updatedItems
+        .filter(item => item.inventory_id && parseFloat(item.quantity_issued) > 0)
+        .map(item => ({
+          inventory_id: parseInt(item.inventory_id),
+          quantity: parseFloat(item.quantity_issued)
+        }));
+
+      if (validItems.length === 0) return;
+
+      abortControllerRef.current = new AbortController();
+      const { signal } = abortControllerRef.current;
+
+      try {
+        const headers = createAuthHeaders();
+        const response = await fetch(`${API_CONFIG.BASE_URL}/inventory/issue-estimate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...headers
+          },
+          body: JSON.stringify({
+            voucher: {
+              items: validItems
+            }
+          }),
+          signal
+        });
+
+        if (response.ok) {
+          const { estimates } = await response.json();
+          setVoucherItems(prev =>
+            prev.map(item => {
+              const est = estimates.find((e: any) => e.inventory_id === parseInt(item.inventory_id));
+              if (est && !est.error) {
+                return {
+                  ...item,
+                  expected_issue_rate: est.expected_issue_rate,
+                  expected_total_cost: est.expected_total_cost,
+                  remaining_unfulfilled: est.remaining_unfulfilled
+                };
+              }
+              // If not selected/valid, clear estimations
+              if (!item.inventory_id || !parseFloat(item.quantity_issued)) {
+                return {
+                  ...item,
+                  expected_issue_rate: undefined,
+                  expected_total_cost: undefined,
+                  remaining_unfulfilled: undefined
+                };
+              }
+              return item;
+            })
+          );
+        }
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error('Failed to fetch MIV cost estimates:', err);
+        }
+      }
+    }, 400);
+  };
+
   const resetIssueForm = () => {
+    if (estimateTimeoutRef.current) clearTimeout(estimateTimeoutRef.current);
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     setSelectedProjectId('');
     setIssuedTo('');
     setIssueRemarks('');
@@ -200,12 +285,23 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
   };
 
   const removeVoucherItem = (index: number) => {
-    setVoucherItems(voucherItems.filter((_, i) => i !== index));
+    const updated = voucherItems.filter((_, i) => i !== index);
+    setVoucherItems(updated);
+    triggerBatchEstimate(updated);
   };
 
   const updateVoucherItem = (index: number, field: string, value: string) => {
     const newItems = [...voucherItems];
     (newItems[index] as any)[field] = value;
+
+    // Clear estimates when selection or quantity changes
+    if (field === 'inventory_id' || field === 'quantity_issued') {
+      newItems[index].expected_issue_rate = undefined;
+      newItems[index].expected_total_cost = undefined;
+      newItems[index].remaining_unfulfilled = undefined;
+      triggerBatchEstimate(newItems);
+    }
+
     setVoucherItems(newItems);
   };
 
@@ -777,9 +873,14 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
       {/* 🚀 MULTI-ITEM MATERIAL ISSUE VOUCHER MODAL */}
       {isIssueModalOpen && (() => {
         const totalVoucherValuation = voucherItems.reduce((acc, item) => {
-          const invItem = inventory.find(i => i.id === parseInt(item.inventory_id));
-          return acc + (parseFloat(item.quantity_issued || '0') * (invItem?.price_per_unit || 0));
+          return acc + (item.expected_total_cost || 0);
         }, 0);
+
+        const hasInsufficientStock = voucherItems.some(item => {
+          const qty = parseFloat(item.quantity_issued || '0');
+          const invItem = inventory.find(i => i.id === parseInt(item.inventory_id));
+          return (invItem && qty > invItem.quantity) || (item.remaining_unfulfilled !== undefined && item.remaining_unfulfilled > 0);
+        });
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
@@ -841,7 +942,8 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                           <th className="px-4 py-3 text-left">Material / Item</th>
                           <th className="px-4 py-3 text-left">Available Stock</th>
                           <th className="px-4 py-3 text-left w-32">Quantity</th>
-                          <th className="px-4 py-3 text-right">Est. Value</th>
+                          <th className="px-4 py-3 text-right">Expected Issue Rate</th>
+                          <th className="px-4 py-3 text-right">Expected Value</th>
                           <th className="px-4 py-3 w-10"></th>
                         </tr>
                       </thead>
@@ -849,8 +951,7 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                         {voucherItems.map((item, index) => {
                           const invItem = inventory.find(i => i.id === parseInt(item.inventory_id));
                           const qty = parseFloat(item.quantity_issued || '0');
-                          const estVal = qty * (invItem?.price_per_unit || 0);
-                          const isOverStock = invItem && qty > invItem.quantity;
+                          const isOverStock = (invItem && qty > invItem.quantity) || (item.remaining_unfulfilled !== undefined && item.remaining_unfulfilled > 0);
 
                           return (
                             <tr key={index} className="hover:bg-gray-50/50">
@@ -877,9 +978,23 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                                   onChange={e => updateVoucherItem(index, 'quantity_issued', e.target.value)}
                                   className={`w-full px-2 py-1 border rounded font-black text-right ${isOverStock ? 'border-red-500 bg-red-50 text-red-700' : 'border-gray-200'}`}
                                 />
+                                {isOverStock && (
+                                  <div className="text-[10px] text-red-600 font-bold text-right mt-0.5">
+                                    {item.remaining_unfulfilled !== undefined && item.remaining_unfulfilled > 0
+                                      ? `Short of ${item.remaining_unfulfilled} unit(s)`
+                                      : 'Insufficient stock'}
+                                  </div>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-right font-bold text-gray-900">
-                                ₹{estVal.toLocaleString()}
+                                {item.expected_issue_rate !== undefined 
+                                  ? `₹${item.expected_issue_rate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+                                  : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-gray-900">
+                                {item.expected_total_cost !== undefined 
+                                  ? `₹${item.expected_total_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+                                  : '-'}
                               </td>
                               <td className="px-4 py-3 text-center">
                                 {voucherItems.length > 1 && (
@@ -894,8 +1009,8 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                       </tbody>
                       <tfoot className="bg-gray-50 border-t border-gray-200">
                         <tr>
-                          <td colSpan={3} className="px-4 py-3 text-right font-bold text-gray-500 uppercase text-xs">Total Voucher Valuation</td>
-                          <td className="px-4 py-3 text-right font-black text-blue-600 text-lg">₹{totalVoucherValuation.toLocaleString()}</td>
+                          <td colSpan={4} className="px-4 py-3 text-right font-bold text-gray-500 uppercase text-xs">Total Voucher Valuation</td>
+                          <td className="px-4 py-3 text-right font-black text-blue-600 text-lg">₹{totalVoucherValuation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                           <td></td>
                         </tr>
                       </tfoot>
@@ -922,7 +1037,7 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                     Cancel
                   </button>
                   <button 
-                    type="submit" disabled={isIssuing}
+                    type="submit" disabled={isIssuing || hasInsufficientStock}
                     className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-lg disabled:opacity-50 transition-all flex items-center"
                   >
                     {isIssuing ? (
@@ -930,7 +1045,11 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                         <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
                         Processing...
                       </>
-                    ) : 'Confirm & Issue Voucher'}
+                    ) : hasInsufficientStock ? (
+                      'Blocked: Insufficient Stock'
+                    ) : (
+                      'Confirm & Issue Voucher'
+                    )}
                   </button>
                 </div>
               </form>
