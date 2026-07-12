@@ -3646,13 +3646,13 @@ api.get('/erp/activity-logs', requireAuth, async (req, res) => {
     }
 
     const countQuery = `SELECT COUNT(*) as total FROM (${query}) as temp`;
-    const [countRows]: any = await pool.execute(countQuery, params);
+    const [countRows]: any = await pool.query(countQuery, params);
     const total = countRows[0]?.total || 0;
 
     query += ` ORDER BY al.created_at DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
-    const [rows]: any = await pool.execute(query, params);
+    const [rows]: any = await pool.query(query, params);
     res.json({
       data: rows,
       pagination: {
