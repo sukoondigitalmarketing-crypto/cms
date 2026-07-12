@@ -697,7 +697,8 @@ async function initDB() {
     });
     await tcpTest;
     
-    const tempConnection = await mysql.createConnection(dbConfig);
+    const { database: _, ...dbConfigWithoutDb } = dbConfig;
+    const tempConnection = await mysql.createConnection(dbConfigWithoutDb);
     console.log(`🔌 Connected to MySQL. Ensuring database '${DB_NAME}' exists...`);
     await tempConnection.query(`CREATE DATABASE IF NOT EXISTS ${DB_NAME}`);
     await tempConnection.end();
@@ -707,16 +708,31 @@ async function initDB() {
 
     poolConnection = await pool.getConnection();
 
+    // Disable foreign key checks for schema initialization on empty database
+    await poolConnection.query("SET FOREIGN_KEY_CHECKS = 0");
+
     // === LOG SCHEMA FOR TABLES WITH POSSIBLE PHONE COLUMNS
-    console.log("=== SCHEMA: vendors");
-    const [vendorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendors");
-    console.log(vendorsCols);
-    console.log("=== SCHEMA: customers");
-    const [customersCols]: any = await poolConnection.query("SHOW COLUMNS FROM customers");
-    console.log(customersCols);
-    console.log("=== SCHEMA: contractors");
-    const [contractorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM contractors");
-    console.log(contractorsCols);
+    try {
+      console.log("=== SCHEMA: vendors");
+      const [vendorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM vendors");
+      console.log(vendorsCols);
+    } catch (e: any) {
+      console.log("=== SCHEMA: vendors table not created yet or error:", e.message);
+    }
+    try {
+      console.log("=== SCHEMA: customers");
+      const [customersCols]: any = await poolConnection.query("SHOW COLUMNS FROM customers");
+      console.log(customersCols);
+    } catch (e: any) {
+      console.log("=== SCHEMA: customers table not created yet or error:", e.message);
+    }
+    try {
+      console.log("=== SCHEMA: contractors");
+      const [contractorsCols]: any = await poolConnection.query("SHOW COLUMNS FROM contractors");
+      console.log(contractorsCols);
+    } catch (e: any) {
+      console.log("=== SCHEMA: contractors table not created yet or error:", e.message);
+    }
 
     // Helper for safe index addition
     const addIndexSafe = async (query: string) => {
@@ -1460,7 +1476,9 @@ async function initDB() {
       try {
         await poolConnection.query("ALTER TABLE grns ADD FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL");
       } catch (e) {}
-      await poolConnection.query("UPDATE grns g JOIN vendors v ON g.vendorName = v.vendor_name SET g.vendor_id = v.id WHERE g.vendorName IS NOT NULL");
+      try {
+        await poolConnection.query("UPDATE grns g JOIN vendors v ON g.vendorName = v.vendor_name SET g.vendor_id = v.id WHERE g.vendorName IS NOT NULL");
+      } catch (e) {}
     }
     if (!colNames.includes('is_emergency')) await poolConnection.query("ALTER TABLE grns ADD COLUMN is_emergency BOOLEAN DEFAULT FALSE");
     if (!colNames.includes('emergency_reason')) await poolConnection.query("ALTER TABLE grns ADD COLUMN emergency_reason TEXT DEFAULT NULL");
@@ -2489,12 +2507,19 @@ async function initDB() {
     // await addProcIndexSafe("CREATE INDEX idx_wo_status ON work_orders(wo_status)"); // WO MODULE DECOMMISSIONED — table preserved for audit lineage only
     await addProcIndexSafe("CREATE INDEX idx_proc_items_parent ON procurement_items(parent_type, parent_id)");
 
-    poolConnection.release();
     console.log('🚀 [INIT] Database initialization fully complete.');
   } catch (error: any) {
     console.error('❌ [INIT] Database Initialization Failed:', error.message);
-    if (poolConnection) poolConnection.release();
     throw error;
+  } finally {
+    if (poolConnection) {
+      try {
+        await poolConnection.query("SET FOREIGN_KEY_CHECKS = 1");
+      } catch (e: any) {
+        console.warn("Failed to restore FOREIGN_KEY_CHECKS:", e.message);
+      }
+      poolConnection.release();
+    }
   }
 }
 
