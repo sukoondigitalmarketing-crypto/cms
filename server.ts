@@ -3149,7 +3149,7 @@ api.post('/auth/login', async (req, res) => {
       // 👑 CEO Login: Must use email
       const targetEmail = email || '';
       const [rows]: any = await pool.execute(
-        'SELECT * FROM users WHERE email = ? AND is_deleted = FALSE AND status = "Active"',
+        'SELECT * FROM users WHERE email = ? AND is_deleted = FALSE AND status = \'Active\'',
         [targetEmail]
       );
       if (rows.length > 0) {
@@ -3168,7 +3168,7 @@ api.post('/auth/login', async (req, res) => {
       }
 
       const [rows]: any = await pool.execute(
-        'SELECT * FROM users WHERE role = ? AND is_deleted = FALSE AND status = "Active"',
+        'SELECT * FROM users WHERE role = ? AND is_deleted = FALSE AND status = \'Active\'',
         [role]
       );
       
@@ -3477,7 +3477,7 @@ api.delete('/admin/users/:uid', requireCEO, async (req, res) => {
     await checkRootProtection(uid);
     checkSelfProtection(uid, req);
 
-    await pool.execute('UPDATE users SET is_deleted = TRUE, status = "Inactive" WHERE uid = ?', [uid]);
+    await pool.execute('UPDATE users SET is_deleted = TRUE, status = \'Inactive\' WHERE uid = ?', [uid]);
     await pool.execute(
       `INSERT INTO user_access_audit (actor_uid, actor_email, actor_role, target_uid, event_type, after_snapshot)
        VALUES (?, ?, ?, ?, 'USER_SOFT_DELETED', ?)`,
@@ -3492,7 +3492,7 @@ api.delete('/admin/users/:uid', requireCEO, async (req, res) => {
 api.patch('/admin/users/:uid/restore', requireCEO, async (req, res) => {
   const { uid } = req.params;
   try {
-    await pool.execute('UPDATE users SET is_deleted = FALSE, status = "Active" WHERE uid = ?', [uid]);
+    await pool.execute('UPDATE users SET is_deleted = FALSE, status = \'Active\' WHERE uid = ?', [uid]);
     await pool.execute(
       `INSERT INTO user_access_audit (actor_uid, actor_email, actor_role, target_uid, event_type, after_snapshot)
        VALUES (?, ?, ?, ?, 'USER_RESTORED', ?)`,
@@ -4478,7 +4478,7 @@ api.post('/inventory/vouchers/revert/:id', authorizeAction('inventory', 'rollbac
 
     // 2. Fetch all active items
     const [items]: any = await connection.execute(
-      'SELECT * FROM material_issue_items WHERE voucher_id = ? AND revert_status = "ACTIVE" AND is_deleted = FALSE FOR UPDATE',
+      'SELECT * FROM material_issue_items WHERE voucher_id = ? AND revert_status = \'ACTIVE\' AND is_deleted = FALSE FOR UPDATE',
       [id]
     );
 
@@ -4501,7 +4501,7 @@ api.post('/inventory/vouchers/revert/:id', authorizeAction('inventory', 'rollbac
 
       // Mark Item as Reverted
       await connection.execute(
-        `UPDATE material_issue_items SET revert_status = "REVERTED", reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, revert_reason = ? WHERE id = ?`,
+        `UPDATE material_issue_items SET revert_status = 'REVERTED', reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, revert_reason = ? WHERE id = ?`,
         [session.name, reason, item.id]
       );
       inventoryToSync.add(item.inventory_id);
@@ -4544,7 +4544,7 @@ api.post('/inventory/vouchers/items/revert/:itemId', authorizeAction('inventory'
 
     // 1. Lock Item
     const [items]: any = await connection.execute(
-      'SELECT * FROM material_issue_items WHERE id = ? AND revert_status = "ACTIVE" AND is_deleted = FALSE FOR UPDATE',
+      'SELECT * FROM material_issue_items WHERE id = ? AND revert_status = \'ACTIVE\' AND is_deleted = FALSE FOR UPDATE',
       [itemId]
     );
     if (items.length === 0) throw new Error('Active item not found');
@@ -4562,13 +4562,13 @@ api.post('/inventory/vouchers/items/revert/:itemId', authorizeAction('inventory'
 
     // 3. Mark Item Reverted
     await connection.execute(
-      `UPDATE material_issue_items SET revert_status = "REVERTED", reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, revert_reason = ? WHERE id = ?`,
+      `UPDATE material_issue_items SET revert_status = 'REVERTED', reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, revert_reason = ? WHERE id = ?`,
       [session.name, reason, itemId]
     );
 
     // 4. Update Voucher Status
     const [remaining]: any = await connection.execute(
-      'SELECT COUNT(*) as count FROM material_issue_items WHERE voucher_id = ? AND revert_status = "ACTIVE" AND is_deleted = FALSE',
+      'SELECT COUNT(*) as count FROM material_issue_items WHERE voucher_id = ? AND revert_status = \'ACTIVE\' AND is_deleted = FALSE',
       [item.voucher_id]
     );
     
@@ -4838,7 +4838,7 @@ api.get('/projects', authorizeAction('projects', 'view'), async (req, res) => {
 api.post('/projects/:id/reactivate', authorizeAction('projects', 'rollback'), async (req, res) => {
   const { id } = req.params;
   try {
-    await pool.execute('UPDATE projects SET is_deleted = 0, status = "NEW" WHERE id = ?', [id]);
+    await pool.execute('UPDATE projects SET is_deleted = 0, status = \'NEW\' WHERE id = ?', [id]);
     res.status(200).json({ message: 'Project reactivated successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -4941,7 +4941,7 @@ api.delete('/projects/:id', authorizeAction('projects', 'delete'), async (req, r
       await pool.execute('DELETE FROM projects WHERE id = ?', [id]);
       res.status(200).json({ message: 'Project permanently deleted' });
     } else {
-      await pool.execute('UPDATE projects SET is_deleted = 1, status = "DEACTIVATED" WHERE id = ?', [id]);
+      await pool.execute('UPDATE projects SET is_deleted = 1, status = \'DEACTIVATED\' WHERE id = ?', [id]);
       res.status(200).json({ message: 'Project deactivated successfully' });
     }
   } catch (error: any) {
@@ -7792,7 +7792,7 @@ api.post('/procurement/po/:id/revise', authorizeAction('procurement', 'edit'), a
 
     if (po.po_status === PO_STATUS.CANCELLED) throw new Error('Cannot revise a cancelled PO');
 
-    const [itemRows]: any = await connection.execute('SELECT * FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?', [id]);
+    const [itemRows]: any = await connection.execute('SELECT * FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?', [id]);
     const currentSnapshot = { ...po, items: itemRows };
 
     await connection.execute(
@@ -7826,11 +7826,11 @@ api.post('/procurement/po/:id/revise', authorizeAction('procurement', 'edit'), a
     }
 
     const [remainingItems]: any = await connection.execute(
-      'SELECT SUM(quantity - received_quantity) as remaining FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?',
+      'SELECT SUM(quantity - received_quantity) as remaining FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?',
       [id]
     );
     const [receivedCount]: any = await connection.execute(
-      'SELECT SUM(received_quantity) as received FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?',
+      'SELECT SUM(received_quantity) as received FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?',
       [id]
     );
     
@@ -8056,7 +8056,7 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
 
       for (const item of items) {
         const [poItemRows]: any = await connection.execute(
-          'SELECT * FROM procurement_items WHERE parent_type = "PO" AND parent_id = ? AND inventory_id = ?',
+          'SELECT * FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ? AND inventory_id = ?',
           [po_id, item.inventory_id]
         );
         if (poItemRows.length === 0) throw new Error(`Item ${item.item_name} is not part of PO ${po.po_number}`);
@@ -8116,7 +8116,7 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
 
       if (po_id) {
         await connection.execute(
-          'UPDATE procurement_items SET received_quantity = received_quantity + ? WHERE parent_type = "PO" AND parent_id = ? AND inventory_id = ?',
+          'UPDATE procurement_items SET received_quantity = received_quantity + ? WHERE parent_type = \'PO\' AND parent_id = ? AND inventory_id = ?',
           [qty, po_id, item.inventory_id]
         );
       }
@@ -8174,7 +8174,7 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
 
     if (po_id) {
       const [remainingItems]: any = await connection.execute(
-        'SELECT SUM(quantity - COALESCE(received_quantity, 0)) as remaining FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?',
+        'SELECT SUM(quantity - COALESCE(received_quantity, 0)) as remaining FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?',
         [po_id]
       );
       const isFulfilled = parseFloat(remainingItems[0].remaining || 0) <= 0.01;
@@ -8294,17 +8294,17 @@ api.post('/grns/:id/cancel', authorizeAction('grn', 'cancel'), async (req, res) 
       const [grnItems]: any = await connection.execute('SELECT inventory_id, quantity FROM grn_items WHERE grn_id = ?', [id]);
       for (const item of grnItems) {
         await connection.execute(
-          'UPDATE procurement_items SET received_quantity = received_quantity - ? WHERE parent_type = "PO" AND parent_id = ? AND inventory_id = ?',
+          'UPDATE procurement_items SET received_quantity = received_quantity - ? WHERE parent_type = \'PO\' AND parent_id = ? AND inventory_id = ?',
           [item.quantity, po_id, item.inventory_id]
         );
       }
       
       const [remainingItems]: any = await connection.execute(
-        'SELECT SUM(quantity - received_quantity) as remaining FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?',
+        'SELECT SUM(quantity - received_quantity) as remaining FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?',
         [po_id]
       );
       const [receivedCount]: any = await connection.execute(
-        'SELECT SUM(received_quantity) as received FROM procurement_items WHERE parent_type = "PO" AND parent_id = ?',
+        'SELECT SUM(received_quantity) as received FROM procurement_items WHERE parent_type = \'PO\' AND parent_id = ?',
         [po_id]
       );
       
