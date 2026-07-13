@@ -228,7 +228,7 @@ export default function App() {
           ) : activeTab === 'activity-logs' ? (
             <ActivityLogsPage onNavigate={handleNavigate} />
           ) : (
-            <AdminDashboard />
+            <AdminDashboard onNavigate={handleNavigate} />
           )}
 
         </div>

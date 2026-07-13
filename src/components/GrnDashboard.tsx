@@ -380,7 +380,9 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
     search: '',
     vendor: '',
     fromDate: '',
-    toDate: ''
+    toDate: '',
+    invoiceStatus: '',
+    pendingOlderThanDays: ''
   });
 
   // Pagination states
@@ -399,10 +401,6 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
   const [remarks, setRemarks] = useState('');
   const [items, setItems] = useState<any[]>([]);
   const [editReason, setEditReason] = useState('');
-  const [discountType, setDiscountType] = useState<'FLAT' | 'PERCENTAGE'>('FLAT');
-  const [discountValue, setDiscountValue] = useState<number>(0);
-  const [transportCharges, setTransportCharges] = useState<number>(0);
-  const [otherCharges, setOtherCharges] = useState<number>(0);
   const [destinationType, setDestinationType] = useState<'CENTRAL_STORE' | 'DIRECT_PROJECT'>('CENTRAL_STORE');
   const [isUsedForEdit, setIsUsedForEdit] = useState(false);
   
@@ -431,6 +429,8 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
       if (filters.vendor) params.append('vendor', filters.vendor);
       if (filters.fromDate) params.append('fromDate', filters.fromDate);
       if (filters.toDate) params.append('toDate', filters.toDate);
+      if (filters.invoiceStatus) params.append('invoiceStatus', filters.invoiceStatus);
+      if (filters.pendingOlderThanDays) params.append('pendingOlderThanDays', filters.pendingOlderThanDays);
       
       const grnQuery = `?${params.toString()}`;
       const historyQuery = `?page=${currentPage}&limit=10${filters.search ? `&search=${filters.search}` : ''}`;
@@ -486,6 +486,35 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
   useEffect(() => {
     fetchData();
   }, [filters, activeTab, currentPage]);
+
+  useEffect(() => {
+    const applyNavQuery = (queryStr: string | null) => {
+      if (!queryStr) return;
+      const params = new URLSearchParams(queryStr);
+      const invoiceStatus = params.get('invoiceStatus') || '';
+      const pendingOlderThanDays = params.get('pendingOlderThanDays') || '';
+
+      if (!invoiceStatus && !pendingOlderThanDays) return;
+
+      setActiveTab('ACTIVE');
+      setCurrentPage(1);
+      setFilters(prev => ({
+        ...prev,
+        invoiceStatus,
+        pendingOlderThanDays
+      }));
+      sessionStorage.removeItem('activity_feed_nav_query');
+    };
+
+    applyNavQuery(sessionStorage.getItem('activity_feed_nav_query'));
+
+    const handleNav = (event: Event) => {
+      applyNavQuery((event as CustomEvent<string>).detail);
+    };
+
+    window.addEventListener('activity_feed_nav', handleNav);
+    return () => window.removeEventListener('activity_feed_nav', handleNav);
+  }, []);
 
   // Reset page when filters change
   useEffect(() => {
@@ -606,13 +635,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
 
     setSubmitting(true);
     try {
-      // Compute final amount using same logic as the UI
       const subtotal = items.reduce((acc: number, item: any) => acc + (parseFloat(item.totalAmount) || 0), 0);
-      const rawDiscount = discountType === 'FLAT'
-        ? parseFloat(String(discountValue)) || 0
-        : (subtotal * (parseFloat(String(discountValue)) || 0)) / 100;
-      const computedDiscount = Math.min(rawDiscount, subtotal);
-      const computedFinalAmount = Math.max(0, subtotal - computedDiscount + (Number(transportCharges) || 0) + (Number(otherCharges) || 0));
 
       const response = await fetch(url, {
         method,
@@ -632,11 +655,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
           po_id: poId || null,
           is_emergency: isEmergency,
           emergency_reason: emergencyReason,
-          discountType: discountValue > 0 ? discountType : null,
-          discountValue: discountValue > 0 ? discountValue : null,
-          transportCharges: Number(transportCharges) || 0,
-          otherCharges: Number(otherCharges) || 0,
-          finalAmount: computedFinalAmount
+          finalAmount: subtotal
         })
       });
 
@@ -669,10 +688,6 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
     setIsEditMode(false);
     setEditingGrnId(null);
     setEditReason('');
-    setDiscountType('FLAT');
-    setDiscountValue(0);
-    setTransportCharges(0);
-    setOtherCharges(0);
     setDestinationType('CENTRAL_STORE');
     setPoId('');
     setIsEmergency(false);
@@ -687,10 +702,6 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
     setProjectId(grn.projectId?.toString() || '');
     setGrnDate(grn.grn_date.split('T')[0]);
     setRemarks(grn.remarks || '');
-    setDiscountType(grn.discountType || 'FLAT');
-    setDiscountValue(Number(grn.discountValue) || 0);
-    setTransportCharges(Number(grn.transportCharges) || 0);
-    setOtherCharges(Number(grn.otherCharges) || 0);
     setDestinationType(grn.destination_type || 'CENTRAL_STORE');
     
     // Fetch full details to get items
@@ -857,10 +868,34 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                 search: f.search,
                 vendor: vendorName,
                 fromDate: f.fromDate,
-                toDate: f.toDate
+                toDate: f.toDate,
+                invoiceStatus: filters.invoiceStatus,
+                pendingOlderThanDays: filters.pendingOlderThanDays
               });
             }}
           />
+          {(filters.invoiceStatus || filters.pendingOlderThanDays) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg text-xs font-black uppercase tracking-wider">
+                Invoice Status: {filters.invoiceStatus === 'PENDING' ? 'Pending' : filters.invoiceStatus}
+              </span>
+              {filters.pendingOlderThanDays && (
+                <span className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-100 rounded-lg text-xs font-black uppercase tracking-wider">
+                  GRN Date &gt; {filters.pendingOlderThanDays} Days
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentPage(1);
+                  setFilters(prev => ({ ...prev, invoiceStatus: '', pendingOlderThanDays: '' }));
+                }}
+                className="px-3 py-1.5 text-xs font-bold text-gray-400 hover:text-gray-700"
+              >
+                Clear invoice filters
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1298,132 +1333,26 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                   />
                 </div>
 
-                {/* Discount + Totals */}
+                {/* Totals */}
                 <div className="w-full md:w-auto md:min-w-[280px] space-y-3">
-                  {/* Subtotal row */}
                   {(() => {
                     const subtotal = items.reduce((acc: number, item: any) => acc + (parseFloat(item.totalAmount) || 0), 0);
-                    const rawDiscount = discountType === 'FLAT'
-                      ? parseFloat(String(discountValue)) || 0
-                      : (subtotal * (parseFloat(String(discountValue)) || 0)) / 100;
-                    const discount = Math.min(rawDiscount, subtotal);
-                    const transport = Number(transportCharges) || 0;
-                    const other = Number(otherCharges) || 0;
-                    const finalTotal = Math.max(0, subtotal - discount + transport + other);
 
                     return (
                       <>
                         {/* Subtotal */}
                         <div className="flex justify-between items-center text-sm">
-                          <span className="text-gray-500 font-medium">Subtotal</span>
+                          <span className="text-gray-500 font-medium">Estimated Subtotal</span>
                           <span className="font-bold text-gray-800">₹{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
-
-                        {/* Discount controls */}
-                        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                          <div className="flex items-center gap-4">
-                            <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Discount</span>
-                            <label className="flex items-center gap-1.5 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="discountType"
-                                value="FLAT"
-                                checked={discountType === 'FLAT'}
-                                onChange={() => setDiscountType('FLAT')}
-                                disabled={isUsedForEdit}
-                                className={`accent-blue-600 ${isUsedForEdit ? 'cursor-not-allowed opacity-50' : ''}`}
-                              />
-                              <span className="text-xs font-semibold text-gray-600">Flat ₹</span>
-                            </label>
-                            <label className="flex items-center gap-1.5 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="discountType"
-                                value="PERCENTAGE"
-                                checked={discountType === 'PERCENTAGE'}
-                                onChange={() => setDiscountType('PERCENTAGE')}
-                                disabled={isUsedForEdit}
-                                className={`accent-blue-600 ${isUsedForEdit ? 'cursor-not-allowed opacity-50' : ''}`}
-                              />
-                              <span className="text-xs font-semibold text-gray-600">Percentage %</span>
-                            </label>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-400 text-sm">{discountType === 'FLAT' ? '₹' : '%'}</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={discountValue === 0 ? '' : discountValue}
-                              onChange={e => setDiscountValue(parseFloat(e.target.value) || 0)}
-                              placeholder="0.00"
-                              disabled={isUsedForEdit}
-                              className={`flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${isUsedForEdit ? 'bg-gray-100 cursor-not-allowed text-gray-400' : ''}`}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Discount amount */}
-                        <div className="flex justify-between items-center text-sm">
-                          <span className="text-red-500 font-medium">Discount</span>
-                          <span className="font-bold text-red-500">- ₹{discount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                        </div>
-
-                        {/* Transport & Other Charges */}
-                        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                          <div className="flex items-center gap-3">
-                            <div className="flex-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Transport Charges <span className="text-gray-400 font-normal">(Optional)</span></label>
-                                <div className="relative flex-1">
-                                  <span className="absolute left-3 top-2.5 text-gray-400 text-sm">₹</span>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    value={transportCharges === 0 ? '' : transportCharges}
-                                    onChange={e => setTransportCharges(parseFloat(e.target.value) || 0)}
-                                    placeholder="Enter Transport Charges (Optional)"
-                                    disabled={isUsedForEdit}
-                                    className={`w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${isUsedForEdit ? 'bg-gray-100 cursor-not-allowed text-gray-400' : ''}`}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Other Charges <span className="text-gray-400 font-normal">(Optional)</span></label>
-                              <div className="flex items-center gap-1.5">
-                                <div className="relative flex-1">
-                                  <span className="absolute left-3 top-2.5 text-gray-400 text-sm">₹</span>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    value={otherCharges === 0 ? '' : otherCharges}
-                                    onChange={e => setOtherCharges(parseFloat(e.target.value) || 0)}
-                                    placeholder="Enter Other Charges (Optional)"
-                                    disabled={isUsedForEdit}
-                                    className={`w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${isUsedForEdit ? 'bg-gray-100 cursor-not-allowed text-gray-400' : ''}`}
-                                  />
-                                </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Charges amount row */}
-                        {(transport > 0 || other > 0) && (
-                          <div className="flex justify-between items-center text-sm">
-                            <span className="text-emerald-600 font-medium">+ Charges</span>
-                            <span className="font-bold text-emerald-600">+ ₹{(transport + other).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          </div>
-                        )}
 
                         {/* Divider */}
                         <div className="border-t border-gray-200" />
 
                         {/* Final Total */}
                         <div className="flex justify-between items-center py-2">
-                          <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Final Total</span>
-                          <span className="text-3xl font-black text-blue-800">₹{finalTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Estimated Total</span>
+                          <span className="text-3xl font-black text-blue-800">₹{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                       </>
                     );

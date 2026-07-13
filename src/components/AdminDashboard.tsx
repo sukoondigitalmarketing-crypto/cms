@@ -14,13 +14,15 @@ import {
   Truck,
   PackagePlus,
   Wallet,
-  Package
+  Package,
+  ReceiptText,
+  FileWarning
 } from 'lucide-react';
 import { API_CONFIG } from '../config';
 import { createAuthHeaders } from '../services/api';
 import { formatCurrency, formatCompactCurrency } from '../services/format';
 
-function StatCard({ title, value, icon, trend, trendType }: any) {
+function StatCard({ title, value, icon, trend, trendType, subtitle, onClick }: any) {
   const valStr = String(value);
   const isVeryLong = valStr.length > 10;
   const isLong = valStr.length > 7;
@@ -32,7 +34,12 @@ function StatCard({ title, value, icon, trend, trendType }: any) {
       : 'text-2xl sm:text-3xl';
 
   return (
-    <div className="bg-white px-5 py-4 sm:px-6 sm:py-5 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between overflow-hidden">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick}
+      className={`text-left bg-white px-5 py-4 sm:px-6 sm:py-5 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between overflow-hidden ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
+    >
       <div className="flex justify-between items-start mb-3">
         <div className={`p-2.5 rounded-xl ${trendType === 'danger' ? 'bg-red-50 text-red-600' : 
                                          trendType === 'warning' ? 'bg-amber-50 text-amber-600' : 
@@ -49,12 +56,17 @@ function StatCard({ title, value, icon, trend, trendType }: any) {
       <div className="mt-auto">
         <p className="text-xs sm:text-sm font-medium text-gray-500 mb-1 truncate" title={title}>{title}</p>
         <h4 className={`${valueSizeClass} font-bold text-gray-900 tracking-tight leading-tight truncate`} title={valStr}>{value}</h4>
+        {subtitle && <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-2">{subtitle}</p>}
       </div>
-    </div>
+    </button>
   );
 }
 
-export function AdminDashboard() {
+interface AdminDashboardProps {
+  onNavigate?: (url: string) => void;
+}
+
+export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -84,6 +96,9 @@ export function AdminDashboard() {
   );
 
   if (!data) return <div className="p-8 text-center text-gray-500">Failed to load dashboard data.</div>;
+
+  const navigateToPendingGrns = () => onNavigate?.('/grn?invoiceStatus=PENDING');
+  const navigateToOverduePendingGrns = () => onNavigate?.('/grn?invoiceStatus=PENDING&pendingOlderThanDays=30');
 
   return (
     <div className="space-y-8 p-2">
@@ -161,6 +176,38 @@ export function AdminDashboard() {
           trendType="default"
         />
       </div>
+
+      {/* Vendor Invoice Monitoring */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-black text-gray-900 tracking-tight">Vendor Invoice Monitoring</h2>
+          <p className="text-sm text-gray-500">Goods receipts awaiting vendor invoice creation.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+          <StatCard
+            title="Awaiting Vendor Invoice"
+            value={data.vendorInvoiceMonitoring?.awaitingVendorInvoice || 0}
+            icon={<ReceiptText className="w-6 h-6" />}
+            trendType={(data.vendorInvoiceMonitoring?.awaitingVendorInvoice || 0) > 0 ? 'warning' : 'success'}
+            onClick={navigateToPendingGrns}
+          />
+          <StatCard
+            title="Overdue Vendor Invoices"
+            value={data.vendorInvoiceMonitoring?.overdueVendorInvoices || 0}
+            subtitle=">30 Days"
+            icon={<FileWarning className="w-6 h-6" />}
+            trendType={(data.vendorInvoiceMonitoring?.overdueVendorInvoices || 0) > 0 ? 'danger' : 'success'}
+            onClick={navigateToOverduePendingGrns}
+          />
+          <StatCard
+            title="Pending Invoice Value"
+            value={formatCompactCurrency(data.vendorInvoiceMonitoring?.pendingInvoiceValue || 0)}
+            icon={<DollarSign className="w-6 h-6" />}
+            trendType={(data.vendorInvoiceMonitoring?.pendingInvoiceValue || 0) > 0 ? 'warning' : 'success'}
+            onClick={navigateToPendingGrns}
+          />
+        </div>
+      </section>
 
       {/* Top Projects by Expense — full width row */}
       <div className="mt-8">

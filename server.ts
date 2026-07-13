@@ -6078,6 +6078,28 @@ api.get('/dashboard-summary', authorizeAction('dashboard', 'view'), async (req, 
     `);
     const inventory = inventoryData?.[0] || { total_asset_value: 0 };
 
+    // 8. Vendor Invoice Monitoring
+    const [vendorInvoiceMonitoringData]: any = await pool.execute(`
+      SELECT
+        COUNT(CASE WHEN vig.grn_id IS NULL THEN 1 END) as awaiting_vendor_invoice,
+        COUNT(CASE WHEN vig.grn_id IS NULL AND g.grn_date < DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as overdue_vendor_invoices,
+        COALESCE(SUM(CASE WHEN vig.grn_id IS NULL THEN COALESCE(g.finalAmount, g.total_amount, 0) ELSE 0 END), 0) as pending_invoice_value
+      FROM grns g
+      LEFT JOIN (
+        SELECT DISTINCT vig.grn_id
+        FROM vendor_invoice_grns vig
+        JOIN vendor_invoices vi ON vi.id = vig.vendor_invoice_id
+        WHERE vi.is_deleted = FALSE
+      ) vig ON vig.grn_id = g.id
+      WHERE g.is_deleted = FALSE
+        AND COALESCE(g.status, 'ACTIVE') IN ('ACTIVE', 'POSTED')
+    `);
+    const vendorInvoiceMonitoring = vendorInvoiceMonitoringData?.[0] || {
+      awaiting_vendor_invoice: 0,
+      overdue_vendor_invoices: 0,
+      pending_invoice_value: 0
+    };
+
     res.status(200).json({
       totalPaymentsReceived: totals.total_payments_received || 0,
       expense: totals.total_expense || 0,
@@ -6089,6 +6111,11 @@ api.get('/dashboard-summary', authorizeAction('dashboard', 'view'), async (req, 
       totalDiscount: grnCharges.total_discount || 0,
       totalTransport: grnCharges.total_transport || 0,
       totalOtherCharges: grnCharges.total_other_charges || 0,
+      vendorInvoiceMonitoring: {
+        awaitingVendorInvoice: Number(vendorInvoiceMonitoring.awaiting_vendor_invoice) || 0,
+        overdueVendorInvoices: Number(vendorInvoiceMonitoring.overdue_vendor_invoices) || 0,
+        pendingInvoiceValue: Number(vendorInvoiceMonitoring.pending_invoice_value) || 0
+      },
       topProjects: topProjects || [],
       topContractors: topContractors || [],
       topVendors: topVendors || []
@@ -6278,7 +6305,7 @@ api.post('/payments', authorizeAction('customers', 'create'), async (req, res) =
 // ═══════════════════════════════════════════════════════════════
 
 api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
-  const { status, search, vendor, fromDate, toDate, page = '1', limit = '10' } = req.query;
+  const { status, search, vendor, fromDate, toDate, invoiceStatus, pendingOlderThanDays, page = '1', limit = '10' } = req.query;
   const p = parseInt(page as string) || 1;
   const l = parseInt(limit as string) || 10;
   const offset = (p - 1) * l;
@@ -6312,13 +6339,36 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
       baseParams.push(toDate);
     }
 
+    if (invoiceStatus) {
+      if (invoiceStatus === 'PENDING') {
+        baseFilter += ` AND vig.grn_id IS NULL `;
+      } else if (invoiceStatus === 'INVOICED') {
+        baseFilter += ` AND vig.grn_id IS NOT NULL `;
+      }
+    }
+
+    if (invoiceStatus === 'PENDING' && pendingOlderThanDays) {
+      const days = Math.max(0, parseInt(String(pendingOlderThanDays), 10) || 0);
+      baseFilter += ` AND g.grn_date < DATE_SUB(CURDATE(), INTERVAL ? DAY) `;
+      baseParams.push(days);
+    }
+
     // 2. Get Global Counts for Tabs (Filtered)
+    const invoiceJoin = `
+      LEFT JOIN (
+        SELECT DISTINCT vig.grn_id
+        FROM vendor_invoice_grns vig
+        JOIN vendor_invoices vi ON vi.id = vig.vendor_invoice_id
+        WHERE vi.is_deleted = FALSE
+      ) vig ON vig.grn_id = g.id
+    `;
+
     const statsQuery = `
       SELECT 
         COUNT(CASE WHEN COALESCE(status, 'ACTIVE') IN ('ACTIVE', 'POSTED') THEN 1 END) as active,
         COUNT(CASE WHEN status = 'CANCELLED' THEN 1 END) as cancelled,
         (SELECT COUNT(*) FROM grn_edit_history) as edited
-      FROM grns g ${baseFilter}
+      FROM grns g ${invoiceJoin} ${baseFilter}
     `;
     const [statsData]: any = await pool.execute(statsQuery, baseParams);
     const stats = statsData?.[0] || { active: 0, cancelled: 0, edited: 0 };
@@ -6340,7 +6390,7 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
     // 4. Get total count for current view
     const countParams = [...baseParams, ...statusParams];
     const [countRows]: any = await pool.execute(
-      `SELECT COUNT(*) as total FROM grns g ${baseFilter}${statusFilter}`,
+      `SELECT COUNT(*) as total FROM grns g ${invoiceJoin} ${baseFilter}${statusFilter}`,
       countParams
     );
     const total = countRows?.[0]?.total || 0;
@@ -6367,8 +6417,13 @@ api.get('/grns', authorizeAction('grn', 'view'), async (req, res) => {
         FROM grn_items gi
         GROUP BY gi.grn_id
       ) gi_sum ON g.id = gi_sum.grn_id
-      LEFT JOIN vendor_invoice_grns vig ON g.id = vig.grn_id
-      LEFT JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id AND vi.is_deleted = FALSE
+      LEFT JOIN (
+        SELECT DISTINCT vig.grn_id, vig.vendor_invoice_id
+        FROM vendor_invoice_grns vig
+        JOIN vendor_invoices vi ON vi.id = vig.vendor_invoice_id
+        WHERE vi.is_deleted = FALSE
+      ) vig ON g.id = vig.grn_id
+      LEFT JOIN vendor_invoices vi ON vig.vendor_invoice_id = vi.id
       ${baseFilter}${statusFilter}
       ORDER BY g.createdAt DESC 
       LIMIT ${parseInt(String(l), 10)} OFFSET ${parseInt(String(offset), 10)}
