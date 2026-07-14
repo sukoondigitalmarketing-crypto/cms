@@ -6021,21 +6021,16 @@ api.get('/dashboard-summary', authorizeAction('dashboard', 'view'), async (req, 
     `);
     const awaitingPOCreation = awaitingPOData?.[0] || { count: 0 };
 
-    // 3. GRN Charges Totals (Discount, Transport, Other)
-    const [grnChargesData]: any = await pool.execute(`
+    // 3. Vendor Invoice Charges Totals (Discount, Transport, Other)
+    const [invoiceChargesData]: any = await pool.execute(`
       SELECT
-        COALESCE(SUM(
-          CASE 
-            WHEN discountType = 'PERCENTAGE' THEN (total_amount * COALESCE(discountValue, 0) / 100)
-            ELSE COALESCE(discountValue, 0)
-          END
-        ), 0) as total_discount,
-        COALESCE(SUM(COALESCE(transportCharges, 0)), 0) as total_transport,
-        COALESCE(SUM(COALESCE(otherCharges, 0)), 0) as total_other_charges
-      FROM grns
+        COALESCE(SUM(COALESCE(discount_amount, 0)), 0) as total_discount,
+        COALESCE(SUM(COALESCE(transport_charges, 0)), 0) as total_transport,
+        COALESCE(SUM(COALESCE(other_charges, 0)), 0) as total_other_charges
+      FROM vendor_invoices
       WHERE is_deleted = FALSE AND status != 'CANCELLED'
     `);
-    const grnCharges = grnChargesData?.[0] || { total_discount: 0, total_transport: 0, total_other_charges: 0 };
+    const invoiceCharges = invoiceChargesData?.[0] || { total_discount: 0, total_transport: 0, total_other_charges: 0 };
 
     // 4. Top Projects (By Expense)
     const [topProjects]: any = await pool.execute(`
@@ -6120,9 +6115,9 @@ api.get('/dashboard-summary', authorizeAction('dashboard', 'view'), async (req, 
       pendingCount: pending.count || 0,
       pendingPRsCount: pendingPRs.count || 0,
       awaitingPOCreation: awaitingPOCreation.count || 0,
-      totalDiscount: grnCharges.total_discount || 0,
-      totalTransport: grnCharges.total_transport || 0,
-      totalOtherCharges: grnCharges.total_other_charges || 0,
+      totalDiscount: invoiceCharges.total_discount || 0,
+      totalTransport: invoiceCharges.total_transport || 0,
+      totalOtherCharges: invoiceCharges.total_other_charges || 0,
       vendorInvoiceMonitoring: {
         awaitingVendorInvoice: Number(vendorInvoiceMonitoring.awaiting_vendor_invoice) || 0,
         overdueVendorInvoices: Number(vendorInvoiceMonitoring.overdue_vendor_invoices) || 0,
@@ -8721,9 +8716,9 @@ api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (r
 
 
 api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async (req, res) => {
-  const { vendor_id, invoice_number, invoice_date, remarks, grn_ids, invoice_amount, transport_charges, other_charges, discount_amount } = req.body;
+  const { vendor_id, invoice_number, invoice_date, remarks, grn_ids, transport_charges, other_charges, discount_amount } = req.body;
 
-  if (!vendor_id || !invoice_number || !invoice_date || !grn_ids || !grn_ids.length || invoice_amount === undefined) {
+  if (!vendor_id || !invoice_number || !invoice_date || !grn_ids || !grn_ids.length) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
@@ -8871,7 +8866,7 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       details: {
         recordNumber: invoice_number,
         vendorName: vendor.vendor_name,
-        amount: parseFloat(invoice_amount),
+        amount: calculatedInvoiceAmount,
         remarks: remarks || 'Draft invoice created'
       }
     });
@@ -8954,7 +8949,7 @@ api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), asyn
 
     // 1. Fetch original invoice and check status
     const [invoices]: any = await connection.execute(
-      'SELECT status, is_deleted FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
+      'SELECT status, is_deleted, transport_charges, other_charges, discount_amount FROM vendor_invoices WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
       [id]
     );
     if (invoices.length === 0) {
@@ -9035,9 +9030,11 @@ api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), asyn
       [id]
     );
     const calculatedRefAmount = updatedLines.reduce((sum: number, l: any) => sum + parseFloat(l.line_total), 0);
-    const discountAmt = parseFloat(discount_amount) || 0;
-    const transportAmt = parseFloat(transport_charges) || 0;
-    const otherAmt = parseFloat(other_charges) || 0;
+    // Omitted charge fields keep their stored value so partial updates never wipe recorded charges
+    const existing = invoices[0];
+    const discountAmt = discount_amount === undefined ? (parseFloat(existing.discount_amount) || 0) : (parseFloat(discount_amount) || 0);
+    const transportAmt = transport_charges === undefined ? (parseFloat(existing.transport_charges) || 0) : (parseFloat(transport_charges) || 0);
+    const otherAmt = other_charges === undefined ? (parseFloat(existing.other_charges) || 0) : (parseFloat(other_charges) || 0);
     const calculatedInvoiceAmount = calculatedRefAmount - discountAmt + transportAmt + otherAmt;
     const variance = calculatedInvoiceAmount - calculatedRefAmount;
 
