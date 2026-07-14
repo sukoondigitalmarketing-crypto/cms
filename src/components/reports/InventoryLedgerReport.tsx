@@ -1,40 +1,51 @@
 import React, { useState, useEffect } from 'react';
-import { History, Download, Printer, ArrowUpRight, ArrowDownRight, Info } from 'lucide-react';
+import { History, Download, Printer, ArrowUpRight, ArrowDownRight, Info, Eye } from 'lucide-react';
 import { API_CONFIG } from '../../config';
 import { getAuthToken } from '../../services/api';
 
 interface InventoryLedgerReportProps {
   filters: any;
   items: any[];
+  onSelectItem?: (inventoryId: string) => void;
 }
 
-export function InventoryLedgerReport({ filters, items }: InventoryLedgerReportProps) {
+export function InventoryLedgerReport({ filters, items, onSelectItem }: InventoryLedgerReportProps) {
   const [data, setData] = useState<any[]>([]);
+  const [summaryData, setSummaryData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!filters.inventory_id) return;
-
     const fetchData = async () => {
       setLoading(true);
       setError('');
       try {
         const token = getAuthToken();
         const queryParams = new URLSearchParams({
-          inventory_id: filters.inventory_id,
-          from_date: filters.from_date,
-          to_date: filters.to_date,
-          project_id: filters.project_id
+          from_date: filters.from_date || '',
+          to_date: filters.to_date || '',
+          project_id: filters.project_id || '',
+          category: filters.category || ''
         });
+
+        if (filters.inventory_id) {
+          queryParams.set('inventory_id', filters.inventory_id);
+        }
 
         const response = await fetch(`${API_CONFIG.BASE_URL}/reports/inventory-ledger?${queryParams}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
 
         if (!response.ok) throw new Error('Failed to fetch ledger data');
-        const ledgerData = await response.json();
-        setData(ledgerData);
+        const responseData = await response.json();
+
+        if (filters.inventory_id) {
+          setData(responseData);
+          setSummaryData([]);
+        } else {
+          setData([]);
+          setSummaryData(responseData);
+        }
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -43,7 +54,7 @@ export function InventoryLedgerReport({ filters, items }: InventoryLedgerReportP
     };
 
     fetchData();
-  }, [filters]);
+  }, [filters.from_date, filters.to_date, filters.project_id, filters.category, filters.inventory_id]);
 
   const handleExport = async () => {
     if (data.length === 0) return;
@@ -87,11 +98,84 @@ export function InventoryLedgerReport({ filters, items }: InventoryLedgerReportP
     }
   };
 
+  const handleSelectItem = (inventoryId: string) => {
+    if (onSelectItem) {
+      onSelectItem(inventoryId);
+      return;
+    }
+  };
+
   if (!filters.inventory_id) {
     return (
-      <div className="flex flex-col items-center justify-center p-20 text-slate-400">
-        <Info className="w-12 h-12 mb-4 opacity-20" />
-        <p className="text-sm font-bold uppercase tracking-widest">Please select an item to view its ledger</p>
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h2 className="text-xl font-black text-slate-900 tracking-tight flex items-center">
+              <History className="w-6 h-6 mr-3 text-blue-600" />
+              INVENTORY LEDGER
+            </h2>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Inventory summary across all items</p>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="w-8 h-8 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+          </div>
+        ) : error ? (
+          <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm font-bold text-center uppercase">
+            {error}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Item Name</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Category</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Unit</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Current Stock</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Total Received</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Total Issued</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Available Stock</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Inventory Value</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {summaryData.map((row) => (
+                  <tr key={row.inventory_id} className="group hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => handleSelectItem(row.inventory_id)}>
+                    <td className="py-4 text-sm font-black text-slate-800">{row.item_name}</td>
+                    <td className="py-4 text-sm font-medium text-slate-600">{row.category || '-'}</td>
+                    <td className="py-4 text-sm font-medium text-slate-600">{row.unit || '-'}</td>
+                    <td className="py-4 text-sm font-bold text-slate-900 text-right">{parseFloat(row.current_stock || 0).toLocaleString()}</td>
+                    <td className="py-4 text-sm font-bold text-green-600 text-right">{parseFloat(row.total_received || 0).toLocaleString()}</td>
+                    <td className="py-4 text-sm font-bold text-red-600 text-right">{parseFloat(row.total_issued || 0).toLocaleString()}</td>
+                    <td className="py-4 text-sm font-bold text-slate-900 text-right">{parseFloat(row.available_stock || 0).toLocaleString()}</td>
+                    <td className="py-4 text-sm font-black text-blue-600 text-right">₹{parseFloat(row.inventory_value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="py-4">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectItem(row.inventory_id);
+                        }}
+                        className="inline-flex items-center px-3 py-2 rounded-lg border border-slate-200 text-xs font-black uppercase tracking-widest text-slate-600 hover:bg-slate-100 transition-colors"
+                      >
+                        <Eye className="w-3.5 h-3.5 mr-2" />
+                        View Ledger
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {summaryData.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-10 text-center text-slate-400 text-sm font-medium">No inventory items found for selected filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     );
   }

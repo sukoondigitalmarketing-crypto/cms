@@ -9602,12 +9602,80 @@ api.delete('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'delete'),
  * Purpose: Complete stock movement tracking with running balance and valuation.
  */
 api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (req, res) => {
-  const { inventory_id, from_date, to_date, project_id } = req.query;
-  
-  if (!inventory_id) return res.status(400).json({ error: 'Item selection (inventory_id) is required for Ledger' });
+  const { inventory_id, from_date, to_date, project_id, category } = req.query;
 
   try {
-    // 1. Fetch Inward Transactions (Batches)
+    if (!inventory_id) {
+      const batchParams: any[] = [];
+      const issueParams: any[] = [];
+      let batchWhere = 'WHERE is_void = FALSE';
+      let issueWhere = 'WHERE is_deleted = FALSE';
+
+      if (from_date) {
+        batchWhere += ' AND received_date >= ?';
+        issueWhere += ' AND issue_date >= ?';
+        batchParams.push(from_date);
+        issueParams.push(from_date);
+      }
+      if (to_date) {
+        batchWhere += ' AND received_date <= ?';
+        issueWhere += ' AND issue_date <= ?';
+        batchParams.push(to_date);
+        issueParams.push(to_date);
+      }
+      if (project_id) {
+        issueWhere += ' AND project_id = ?';
+        issueParams.push(project_id);
+      }
+
+      let summaryQuery = `
+        SELECT 
+          i.id as inventory_id,
+          i.item_name,
+          i.category,
+          i.unit,
+          COALESCE(i.quantity, 0) as current_stock,
+          COALESCE(received.total_received, 0) as total_received,
+          COALESCE(issued.total_issued, 0) as total_issued,
+          COALESCE(i.quantity, 0) as available_stock,
+          COALESCE(i.total_value, 0) as inventory_value
+        FROM inventory i
+        LEFT JOIN (
+          SELECT inventory_id, SUM(quantity_received) as total_received
+          FROM inventory_batches
+          ${batchWhere}
+          GROUP BY inventory_id
+        ) received ON received.inventory_id = i.id
+        LEFT JOIN (
+          SELECT inventory_id, SUM(quantity_issued) as total_issued
+          FROM material_issues
+          ${issueWhere}
+          GROUP BY inventory_id
+        ) issued ON issued.inventory_id = i.id
+        WHERE i.is_deleted = FALSE
+      `;
+
+      const summaryParams: any[] = [...batchParams, ...issueParams];
+
+      if (category) {
+        summaryQuery += ' AND i.category = ?';
+        summaryParams.push(category);
+      }
+
+      summaryQuery += ' ORDER BY i.item_name ASC';
+
+      const [rows]: any = await pool.execute(summaryQuery, summaryParams);
+      return res.status(200).json(rows.map((row: any) => ({
+        ...row,
+        current_stock: parseFloat(row.current_stock || 0),
+        total_received: parseFloat(row.total_received || 0),
+        total_issued: parseFloat(row.total_issued || 0),
+        available_stock: parseFloat(row.available_stock || 0),
+        inventory_value: parseFloat(row.inventory_value || 0)
+      })));
+    }
+
+    // Detailed item ledger for a specific inventory item
     let inwardQuery = `
       SELECT 
         received_date as date, 
@@ -9627,7 +9695,6 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
     `;
     const inwardParams: any[] = [inventory_id];
 
-    // 2. Fetch Outward Transactions (Issues)
     let outwardQuery = `
       SELECT 
         issue_date as date, 
@@ -9648,7 +9715,6 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
       outwardParams.push(project_id);
     }
 
-    // 3. Combine and Sort
     const combinedQuery = `
       SELECT * FROM (${inwardQuery} UNION ALL ${outwardQuery}) as movements
       ORDER BY date ASC, type DESC
@@ -9656,7 +9722,6 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
     
     const [rows]: any = await pool.execute(combinedQuery, [...inwardParams, ...outwardParams]);
 
-    // 4. Calculate Running Balances and Valuation (Done in Node.js to preserve high precision)
     let runningBalance = 0;
     let runningValue = 0;
     
@@ -9671,7 +9736,6 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
       };
     });
 
-    // 5. Apply Date Filters after calculation if requested (to keep running totals accurate)
     let finalLedger = ledger;
     if (from_date) {
       finalLedger = finalLedger.filter((item: any) => item.date >= from_date);

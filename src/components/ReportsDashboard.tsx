@@ -181,7 +181,13 @@ export function ReportsDashboard() {
 
       {/* Active Report View */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        {activeReport === 'inventory-ledger' && <InventoryLedgerReport filters={filters} items={items} />}
+        {activeReport === 'inventory-ledger' && (
+          <InventoryLedgerReport
+            filters={filters}
+            items={items}
+            onSelectItem={(inventoryId: string) => setFilters((prev: any) => ({ ...prev, inventory_id: inventoryId }))}
+          />
+        )}
         {activeReport === 'procurement-register' && <ProcurementRegisterReport />}
         {activeReport === 'grn-register' && <GrnRegisterReport filters={filters} />}
         {activeReport === 'material-consumption' && <MaterialConsumptionReport filters={filters} />}
