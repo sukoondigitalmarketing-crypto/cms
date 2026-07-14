@@ -1735,6 +1735,18 @@ async function initDB() {
       await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN confirmed_at TIMESTAMP NULL DEFAULT NULL");
       console.log("✅ Added vendor_invoices.confirmed_at");
     }
+    if (!viColNames.includes('transport_charges')) {
+      await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN transport_charges DECIMAL(15,2) DEFAULT 0.00");
+      console.log("✅ Added vendor_invoices.transport_charges");
+    }
+    if (!viColNames.includes('other_charges')) {
+      await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN other_charges DECIMAL(15,2) DEFAULT 0.00");
+      console.log("✅ Added vendor_invoices.other_charges");
+    }
+    if (!viColNames.includes('discount_amount')) {
+      await poolConnection.query("ALTER TABLE vendor_invoices ADD COLUMN discount_amount DECIMAL(15,2) DEFAULT 0.00");
+      console.log("✅ Added vendor_invoices.discount_amount");
+    }
 
 
     // Vendor Invoice GRNs Linking Table
@@ -8709,7 +8721,7 @@ api.get('/vendor-invoices', authorizeAction('vendor_invoices', 'view'), async (r
 
 
 api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async (req, res) => {
-  const { vendor_id, invoice_number, invoice_date, remarks, grn_ids, invoice_amount } = req.body;
+  const { vendor_id, invoice_number, invoice_date, remarks, grn_ids, invoice_amount, transport_charges, other_charges, discount_amount } = req.body;
 
   if (!vendor_id || !invoice_number || !invoice_date || !grn_ids || !grn_ids.length || invoice_amount === undefined) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -8773,14 +8785,19 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
     const createdBy = (req as any).user?.name || (req as any).user?.email || 'System';
 
     // Insert Invoice with status = 'DRAFT'
+    const discountAmt = parseFloat(discount_amount) || 0;
+    const transportAmt = parseFloat(transport_charges) || 0;
+    const otherAmt = parseFloat(other_charges) || 0;
     const [insertResult]: any = await connection.execute(
       `INSERT INTO vendor_invoices (
         vendor_id, invoice_number, invoice_date, remarks, reference_amount, invoice_amount, variance, status,
-        vendor_name_snapshot, vendor_gst_snapshot, vendor_address_snapshot, created_by, is_deleted
-      ) VALUES (?, ?, ?, ?, 0.00, ?, 0.00, 'DRAFT', ?, ?, ?, ?, FALSE)`,
+        vendor_name_snapshot, vendor_gst_snapshot, vendor_address_snapshot, created_by, is_deleted,
+        transport_charges, other_charges, discount_amount
+      ) VALUES (?, ?, ?, ?, 0.00, 0.00, 0.00, 'DRAFT', ?, ?, ?, ?, FALSE, ?, ?, ?)`,
       [
-        vendor_id, invoice_number, invoice_date, remarks || '', invoice_amount,
-        vendor.vendor_name, vendor.gst_number || null, vendor.address || null, createdBy
+        vendor_id, invoice_number, invoice_date, remarks || '',
+        vendor.vendor_name, vendor.gst_number || null, vendor.address || null, createdBy,
+        transportAmt, otherAmt, discountAmt
       ]
     );
 
@@ -8830,11 +8847,12 @@ api.post('/vendor-invoices', authorizeAction('vendor_invoices', 'create'), async
       }
     }
 
-    // Update Invoice header reference_amount and variance
-    const variance = parseFloat(invoice_amount) - calculatedRefAmount;
+    // Update Invoice header reference_amount, invoice_amount, and variance
+    const calculatedInvoiceAmount = calculatedRefAmount - discountAmt + transportAmt + otherAmt;
+    const variance = calculatedInvoiceAmount - calculatedRefAmount;
     await connection.execute(
-      'UPDATE vendor_invoices SET reference_amount = ?, variance = ? WHERE id = ?',
-      [calculatedRefAmount, variance, invoiceId]
+      'UPDATE vendor_invoices SET reference_amount = ?, invoice_amount = ?, variance = ?, transport_charges = ?, other_charges = ?, discount_amount = ? WHERE id = ?',
+      [calculatedRefAmount, calculatedInvoiceAmount, variance, transportAmt, otherAmt, discountAmt, invoiceId]
     );
 
     const [grnProject]: any = await connection.execute('SELECT projectId FROM grns WHERE id = ?', [grn_ids[0]]);
@@ -8924,9 +8942,9 @@ api.get('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'view'), asyn
 
 api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), async (req, res) => {
   const { id } = req.params;
-  const { invoice_date, remarks, invoice_amount, line_items } = req.body;
+  const { invoice_date, remarks, line_items, transport_charges, other_charges, discount_amount } = req.body;
 
-  if (!invoice_date || invoice_amount === undefined) {
+  if (!invoice_date) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
@@ -9011,20 +9029,24 @@ api.put('/vendor-invoices/:id', authorizeAction('vendor_invoices', 'edit'), asyn
       }
     }
 
-    // 3. Recalculate variance
+    // 3. Recalculate reference_amount, invoice_amount, and variance
     const [updatedLines]: any = await connection.execute(
       'SELECT line_total FROM vendor_invoice_items WHERE vendor_invoice_id = ?',
       [id]
     );
     const calculatedRefAmount = updatedLines.reduce((sum: number, l: any) => sum + parseFloat(l.line_total), 0);
-    const variance = parseFloat(invoice_amount) - calculatedRefAmount;
+    const discountAmt = parseFloat(discount_amount) || 0;
+    const transportAmt = parseFloat(transport_charges) || 0;
+    const otherAmt = parseFloat(other_charges) || 0;
+    const calculatedInvoiceAmount = calculatedRefAmount - discountAmt + transportAmt + otherAmt;
+    const variance = calculatedInvoiceAmount - calculatedRefAmount;
 
     // 4. Update Header
     await connection.execute(
       `UPDATE vendor_invoices 
-       SET invoice_date = ?, remarks = ?, reference_amount = ?, invoice_amount = ?, variance = ?
+       SET invoice_date = ?, remarks = ?, reference_amount = ?, invoice_amount = ?, variance = ?, transport_charges = ?, other_charges = ?, discount_amount = ?
        WHERE id = ?`,
-      [invoice_date, remarks || '', calculatedRefAmount, invoice_amount, variance, id]
+      [invoice_date, remarks || '', calculatedRefAmount, calculatedInvoiceAmount, variance, transportAmt, otherAmt, discountAmt, id]
     );
 
     await connection.commit();

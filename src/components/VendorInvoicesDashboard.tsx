@@ -54,6 +54,9 @@ interface Invoice {
   amount_paid?: number;
   pending_amount?: number;
   payment_status?: string;
+  transport_charges?: number;
+  other_charges?: number;
+  discount_amount?: number;
 }
 
 interface Project {
@@ -80,6 +83,9 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
   const [selectedGrnIds, setSelectedGrnIds] = useState<number[]>([]);
   const [invoiceAmount, setInvoiceAmount] = useState<string>('');
   const [isAmountManuallyEdited, setIsAmountManuallyEdited] = useState(false);
+  const [transportCharges, setTransportCharges] = useState<string>('');
+  const [otherCharges, setOtherCharges] = useState<string>('');
+  const [discountAmount, setDiscountAmount] = useState<string>('');
 
   // Edit states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -348,7 +354,13 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     }, 0);
   }, [isEditMode, editingLineItems, selectedGrnIds, availableGrns]);
 
-  const currentInvoiceAmount = parseFloat(invoiceAmount) || 0;
+  const currentInvoiceAmount = useMemo(() => {
+    const transport = parseFloat(transportCharges) || 0;
+    const other = parseFloat(otherCharges) || 0;
+    const discount = parseFloat(discountAmount) || 0;
+    return referenceAmount - discount + transport + other;
+  }, [referenceAmount, transportCharges, otherCharges, discountAmount]);
+
   const currentVariance = referenceAmount > 0 ? currentInvoiceAmount - referenceAmount : 0;
 
   // Decoupled Workflow Config
@@ -434,25 +446,28 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
 
   // Variance styling helpers
   const getVarianceStyles = (refVal: number, invVal: number) => {
-    if (refVal <= 0) return { bg: 'bg-slate-50 border-slate-200 text-slate-700', label: 'No Reference' };
+    if (refVal <= 0) return { bg: 'bg-slate-50 border-slate-200', text: 'text-slate-700', label: 'No Reference' };
     const diff = invVal - refVal;
     const pct = (Math.abs(diff) / refVal) * 100;
     
     if (pct <= 5) {
       return { 
-        bg: 'bg-emerald-50 border-emerald-200 text-emerald-800', 
+        bg: 'bg-emerald-50 border-emerald-200', 
+        text: 'text-emerald-800',
         label: 'Acceptable Variance (≤ 5%)',
         badge: 'bg-emerald-100 text-emerald-800'
       };
     } else if (pct <= 10) {
       return { 
-        bg: 'bg-amber-50 border-amber-200 text-amber-800', 
+        bg: 'bg-amber-50 border-amber-200', 
+        text: 'text-amber-800',
         label: 'Warning Variance (5% - 10%)',
         badge: 'bg-amber-100 text-amber-800'
       };
     } else {
       return { 
-        bg: 'bg-red-50 border-red-200 text-red-800', 
+        bg: 'bg-red-50 border-red-200', 
+        text: 'text-red-800',
         label: 'Critical Variance (> 10%)',
         badge: 'bg-red-100 text-red-800'
       };
@@ -461,7 +476,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVendor || !invoiceNumber || !invoiceDate || invoiceAmount === '') {
+    if (!selectedVendor || !invoiceNumber || !invoiceDate) {
       showToast('Please fill in all mandatory fields.', 'warning');
       return;
     }
@@ -479,7 +494,9 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
         const payload = {
           invoice_date: invoiceDate,
           remarks,
-          invoice_amount: parseFloat(invoiceAmount),
+          transport_charges: parseFloat(transportCharges) || 0,
+          other_charges: parseFloat(otherCharges) || 0,
+          discount_amount: parseFloat(discountAmount) || 0,
           line_items: editingLineItems.map(item => ({
             id: item.id,
             billed_quantity: parseFloat(item.billed_quantity),
@@ -524,7 +541,9 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
           invoice_date: invoiceDate,
           remarks,
           grn_ids: selectedGrnIds,
-          invoice_amount: parseFloat(invoiceAmount)
+          transport_charges: parseFloat(transportCharges) || 0,
+          other_charges: parseFloat(otherCharges) || 0,
+          discount_amount: parseFloat(discountAmount) || 0
         };
 
         const res = await fetch(`${API_CONFIG.BASE_URL}/vendor-invoices`, {
@@ -603,6 +622,9 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
         setInvoiceDate(data.invoice_date.split('T')[0]);
         setRemarks(data.remarks || '');
         setInvoiceAmount(data.invoice_amount.toString());
+        setTransportCharges(data.transport_charges?.toString() || '');
+        setOtherCharges(data.other_charges?.toString() || '');
+        setDiscountAmount(data.discount_amount?.toString() || '');
         setIsAmountManuallyEdited(true); // Prevent overwrite automatically
         setSelectedGrnIds(data.grn_ids || []);
         setEditingLineItems(data.line_items || []);
@@ -711,6 +733,9 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     setAvailableGrns([]);
     setInvoiceAmount('');
     setIsAmountManuallyEdited(false);
+    setTransportCharges('');
+    setOtherCharges('');
+    setDiscountAmount('');
     setIsEditMode(false);
     setEditingInvoiceId(null);
     setEditingLineItems([]);
@@ -851,46 +876,27 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
     if (!selectedInvoice) return null;
 
     let materialTotal = 0;
-    let totalDiscount = 0;
-    let transportCharges = 0;
-    let otherCharges = 0;
-    let taxableAmount = 0;
-    let gstAmount = 0;
 
     detailedGrns.forEach(grn => {
       const subtotal = Number(grn.total_amount) || 0;
       materialTotal += subtotal;
-
-      const disc = getGrnDiscountAmount(grn);
-      totalDiscount += disc;
-
-      transportCharges += Number(grn.transportCharges) || 0;
-      otherCharges += Number(grn.otherCharges) || 0;
     });
 
-    taxableAmount = materialTotal - totalDiscount;
-
-    // GST calculation
-    detailedItems.forEach(item => {
-      const lineAmt = (Number(item.quantity) * Number(item.rate)) || 0;
-      const gstPct = Number(item.gst_percent) || 0;
-      gstAmount += lineAmt * (gstPct / 100);
-    });
-
+    const discountAmount = Number(selectedInvoice.discount_amount) || 0;
+    const transportCharges = Number(selectedInvoice.transport_charges) || 0;
+    const otherCharges = Number(selectedInvoice.other_charges) || 0;
     const finalInvoiceAmount = Number(selectedInvoice.invoice_amount) || 0;
     const variance = Number(selectedInvoice.variance) || 0;
 
     return {
       materialTotal,
-      totalDiscount,
+      discountAmount,
       transportCharges,
       otherCharges,
-      taxableAmount,
-      gstAmount,
       finalInvoiceAmount,
       variance
     };
-  }, [selectedInvoice, detailedGrns, detailedItems]);
+  }, [selectedInvoice, detailedGrns]);
 
   const toggleItemExpansion = (key: string) => {
     setExpandedItems(prev => ({
@@ -1162,7 +1168,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                               ₹{Number(inv.invoice_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                             </td>
                             <td className="px-6 py-4 text-center">
-                              <div className={`inline-flex flex-col items-center px-2.5 py-1 rounded-lg border text-xs font-bold ${varianceStyles.bg}`}>
+                              <div className={`inline-flex flex-col items-center px-2.5 py-1 rounded-lg border text-xs font-bold ${varianceStyles.bg} ${varianceStyles.text}`}>
                                 <span>₹{Number(inv.variance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                                 {Number(inv.reference_amount) > 0 && (
                                   <span className="text-[9px] opacity-80 mt-0.5">
@@ -1619,7 +1625,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                       </div>
                       <div className="flex justify-between text-emerald-400">
                         <span>Discount Deductions</span>
-                        <span className="font-mono">- ₹{financialSummary.totalDiscount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                        <span className="font-mono">- ₹{financialSummary.discountAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>Transport Charges</span>
@@ -1628,15 +1634,6 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                       <div className="flex justify-between">
                         <span>Other Charges</span>
                         <span className="font-mono text-white">₹{financialSummary.otherCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      <div className="border-t border-slate-800 my-2"></div>
-                      <div className="flex justify-between text-slate-200 text-sm font-bold">
-                        <span>Taxable Amount</span>
-                        <span className="font-mono text-white">₹{financialSummary.taxableAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      <div className="flex justify-between text-blue-400">
-                        <span>GST Tax Amount</span>
-                        <span className="font-mono">₹{financialSummary.gstAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                       </div>
                       <div className="border-t border-slate-800 my-2"></div>
                       <div className="flex justify-between text-slate-200 text-sm font-bold bg-slate-850 p-2.5 rounded-xl border border-slate-800">
@@ -1988,7 +1985,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                 )}
 
                 {/* Financial Summary & Live Variance Panel */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-gray-100 bg-gray-50/50 p-5 rounded-2xl">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 pt-4 border-t border-gray-100 bg-gray-50/50 p-5 rounded-2xl">
                   
                   {/* Reference Sum Panel */}
                   <div className="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col justify-between">
@@ -2003,51 +2000,100 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                     </span>
                   </div>
 
-                  {/* Invoice Amount Input Panel */}
+                  {/* Discount Input Panel */}
                   <div className="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col justify-between">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">
-                      Invoice Amount (₹) <span className="text-red-500">*</span>
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      Discount (₹)
                     </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      required
-                      placeholder="0.00"
-                      value={invoiceAmount}
-                      onChange={(e) => {
-                        setInvoiceAmount(e.target.value);
-                        setIsAmountManuallyEdited(true);
-                      }}
-                      className="text-lg font-black text-slate-900 mt-1 pb-1 border-b border-gray-200 outline-none focus:border-blue-500 focus:ring-0 w-full"
-                    />
+                    <div className="flex items-center mt-2">
+                      <span className="text-slate-400 mr-1 text-base font-semibold">₹</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={discountAmount}
+                        disabled={isEditMode && selectedInvoice?.status !== 'DRAFT'}
+                        onChange={(e) => setDiscountAmount(e.target.value)}
+                        className="text-lg font-black text-slate-900 pb-1 border-b border-gray-200 outline-none focus:border-blue-500 focus:ring-0 w-full"
+                      />
+                    </div>
                     <span className="text-[10px] text-slate-400 font-medium mt-1">
-                      Input invoice billing total
+                      Fixed discount amount
                     </span>
                   </div>
 
-                  {/* Live Variance Panel */}
-                  <div className={`p-4 rounded-xl border shadow-sm flex flex-col justify-between transition-all duration-300 ${
-                    getVarianceStyles(referenceAmount, currentInvoiceAmount).bg
-                  }`}>
-                    <span className="text-[10px] font-black uppercase tracking-widest opacity-80">
-                      Live Variance Alert
+                  {/* Transport Charges Input Panel */}
+                  <div className="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      Transport Charges (₹)
                     </span>
-                    <div className="text-xl font-black mt-2">
-                      ₹{currentVariance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      {referenceAmount > 0 && (
-                        <span className="text-xs font-bold ml-1.5 opacity-90 font-mono">
-                          ({currentVariance >= 0 ? '+' : ''}{((currentVariance / referenceAmount) * 100).toFixed(2)}%)
-                        </span>
-                      )}
+                    <div className="flex items-center mt-2">
+                      <span className="text-slate-400 mr-1 text-base font-semibold">₹</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={transportCharges}
+                        disabled={isEditMode && selectedInvoice?.status !== 'DRAFT'}
+                        onChange={(e) => setTransportCharges(e.target.value)}
+                        className="text-lg font-black text-slate-900 pb-1 border-b border-gray-200 outline-none focus:border-blue-500 focus:ring-0 w-full"
+                      />
                     </div>
-                    <span className="text-[10px] font-bold mt-1 flex items-center">
-                      {currentVariance !== 0 ? (
-                        <AlertTriangle className="w-3.5 h-3.5 mr-1" />
-                      ) : (
-                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-                      )}
-                      {getVarianceStyles(referenceAmount, currentInvoiceAmount).label}
+                    <span className="text-[10px] text-slate-400 font-medium mt-1">
+                      Transportation costs
                     </span>
+                  </div>
+
+                  {/* Other Charges Input Panel */}
+                  <div className="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      Other Charges (₹)
+                    </span>
+                    <div className="flex items-center mt-2">
+                      <span className="text-slate-400 mr-1 text-base font-semibold">₹</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={otherCharges}
+                        disabled={isEditMode && selectedInvoice?.status !== 'DRAFT'}
+                        onChange={(e) => setOtherCharges(e.target.value)}
+                        className="text-lg font-black text-slate-900 pb-1 border-b border-gray-200 outline-none focus:border-blue-500 focus:ring-0 w-full"
+                      />
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium mt-1">
+                      Miscellaneous costs
+                    </span>
+                  </div>
+
+                  {/* Calculated Invoice Amount & Variance Panel */}
+                  <div className="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div>
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          Invoice Amount
+                        </span>
+                        <div className="text-xl font-black text-blue-700 mt-1">
+                          ₹{currentInvoiceAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                      <div className={`px-3 py-1.5 rounded-lg flex items-center justify-between ${getVarianceStyles(referenceAmount, currentInvoiceAmount).bg}`}>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">
+                          Variance
+                        </span>
+                        <span className={`text-xs font-black ${getVarianceStyles(referenceAmount, currentInvoiceAmount).text}`}>
+                          {currentVariance > 0 ? '+' : ''}₹{currentVariance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          {referenceAmount > 0 && (
+                            <span className="ml-1 text-[10px] opacity-80">
+                              ({currentVariance > 0 ? '+' : ''}{((currentVariance / referenceAmount) * 100).toFixed(2)}%)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -2062,7 +2108,7 @@ export function VendorInvoicesDashboard({ role }: VendorInvoicesDashboardProps) 
                   </button>
                   <button
                     type="submit"
-                    disabled={submitting || !selectedVendor || (!isEditMode && !selectedGrnIds.length) || invoiceAmount === ''}
+                    disabled={submitting || !selectedVendor || (!isEditMode && !selectedGrnIds.length)}
                     className="flex-[2] px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center justify-center"
                   >
                     {submitting ? (isEditMode ? 'Saving Changes...' : 'Creating Invoice...') : (isEditMode ? 'Save Changes' : 'Save & Link GRNs')}
