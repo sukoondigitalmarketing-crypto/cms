@@ -51,6 +51,15 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
   const [isIssuing, setIsIssuing] = useState(false);
   const [qtyError, setQtyError] = useState<string | null>(null);
 
+  // 📦 Update Opening Stock State
+  const [isOpeningStockModalOpen, setIsOpeningStockModalOpen] = useState(false);
+  const [osItemId, setOsItemId] = useState('');
+  const [osQuantity, setOsQuantity] = useState('');
+  const [osUnitCost, setOsUnitCost] = useState('');
+  const [osDate, setOsDate] = useState(new Date().toISOString().split('T')[0]);
+  const [osReason, setOsReason] = useState('');
+  const [isSubmittingOpeningStock, setIsSubmittingOpeningStock] = useState(false);
+
   // 📝 Multi-Item Voucher State
   const [voucherItems, setVoucherItems] = useState<{
     inventory_id: string;
@@ -352,6 +361,56 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
     }
   };
 
+  const resetOpeningStockForm = () => {
+    setOsItemId('');
+    setOsQuantity('');
+    setOsUnitCost('');
+    setOsDate(new Date().toISOString().split('T')[0]);
+    setOsReason('');
+    setIsSubmittingOpeningStock(false);
+  };
+
+  const handleOpeningStockSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingOpeningStock) return;
+
+    const qty = parseFloat(osQuantity);
+    const cost = parseFloat(osUnitCost);
+    if (!osItemId) { alert('Please select an inventory item.'); return; }
+    if (isNaN(qty) || qty <= 0) { alert('Quantity must be greater than zero.'); return; }
+    if (isNaN(cost) || cost <= 0) { alert('Unit cost must be greater than zero.'); return; }
+    if (!osReason.trim()) { alert('A reason is required for opening stock.'); return; }
+
+    setIsSubmittingOpeningStock(true);
+    try {
+      const response = await fetch(`${API_CONFIG.BASE_URL}/inventory/opening-stock`, {
+        method: 'POST',
+        headers: createAuthHeaders(true),
+        body: JSON.stringify({
+          inventory_id: osItemId,
+          quantity: qty,
+          unit_cost: cost,
+          received_date: osDate,
+          reason: osReason.trim()
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to record opening stock');
+      }
+
+      setIsOpeningStockModalOpen(false);
+      resetOpeningStockForm();
+      fetchData();
+      alert('Opening stock recorded successfully!');
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setIsSubmittingOpeningStock(false);
+    }
+  };
+
   const handleIssueMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isIssuing) return;
@@ -482,12 +541,19 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                 <ArrowDownRight className="w-4 h-4 mr-2" />
                 Issue Material
               </button>
-              <button 
+              <button
                 onClick={() => { resetForm(); setIsModalOpen(true); }}
                 className="px-4 py-2 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 flex items-center shadow-sm"
               >
                 <Plus className="w-4 h-4 mr-2" />
                 Register New Material
+              </button>
+              <button
+                onClick={() => { resetOpeningStockForm(); setIsOpeningStockModalOpen(true); }}
+                className="px-4 py-2 bg-slate-700 rounded-lg text-sm font-medium text-white hover:bg-slate-800 flex items-center shadow-sm"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Update Opening Stock
               </button>
             </>
           )}
@@ -863,6 +929,107 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                   className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
                 >
                   {editingItem ? 'Update Material' : 'Register Material'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 📦 Update Opening Stock Modal */}
+      {isOpeningStockModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center">
+                <Plus className="w-5 h-5 mr-2 text-slate-700" />
+                Update Opening Stock
+              </h3>
+              <button onClick={() => !isSubmittingOpeningStock && setIsOpeningStockModalOpen(false)} disabled={isSubmittingOpeningStock} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="bg-amber-50 px-6 py-2 border-b border-amber-100 text-[11px] text-amber-700 font-bold uppercase tracking-wider">
+              For ERP go-live initialization and exceptional corrections only. Creates a valued stock batch.
+            </div>
+            <form onSubmit={handleOpeningStockSubmit} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Inventory Item</label>
+                <select
+                  required
+                  value={osItemId}
+                  onChange={e => setOsItemId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">Select Material...</option>
+                  {inventory.map(i => (
+                    <option key={i.id} value={i.id}>{i.item_name} ({i.unit})</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
+                  <input
+                    type="number" step="any" required min="0"
+                    value={osQuantity}
+                    onChange={e => setOsQuantity(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="e.g. 500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Unit Cost (₹)</label>
+                  <input
+                    type="number" step="any" required min="0"
+                    value={osUnitCost}
+                    onChange={e => setOsUnitCost(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="e.g. 450"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Opening Stock Date</label>
+                <input
+                  type="date" required
+                  value={osDate}
+                  onChange={e => setOsDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
+                <textarea
+                  required
+                  value={osReason}
+                  onChange={e => setOsReason(e.target.value)}
+                  placeholder="e.g. ERP go-live opening balance, physical stock reconciliation..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none"
+                />
+              </div>
+              <div className="pt-4 flex justify-end space-x-3">
+                <button
+                  type="button"
+                  disabled={isSubmittingOpeningStock}
+                  onClick={() => setIsOpeningStockModalOpen(false)}
+                  className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingOpeningStock}
+                  className="px-4 py-2 bg-slate-700 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50 flex items-center"
+                >
+                  {isSubmittingOpeningStock ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
+                      Recording...
+                    </>
+                  ) : (
+                    'Record Opening Stock'
+                  )}
                 </button>
               </div>
             </form>

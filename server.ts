@@ -445,6 +445,32 @@ async function syncInventoryFromBatches(connection: mysql.PoolConnection, invent
 }
 
 /**
+ * Inserts a single inventory batch row and returns its new id.
+ * Shared by GRN receipt (grn_id set) and Update Opening Stock (grn_id NULL).
+ * quantity_received == quantity_remaining and total_value_received == total_value_remaining
+ * at creation time, mirroring the original GRN batch inserts.
+ */
+async function createInventoryBatch(
+  connection: mysql.PoolConnection,
+  batch: {
+    inventory_id: number | string;
+    grn_id: number | null;
+    batch_number: string;
+    quantity: number;
+    total_value: number;
+    unit_price: number;
+    received_date: string;
+  }
+): Promise<number> {
+  const [result]: any = await connection.execute(
+    `INSERT INTO inventory_batches (inventory_id, grn_id, batch_number, quantity_received, quantity_remaining, total_value_received, total_value_remaining, unit_price, received_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [batch.inventory_id, batch.grn_id, batch.batch_number, batch.quantity, batch.quantity, batch.total_value, batch.total_value, batch.unit_price, batch.received_date]
+  );
+  return result.insertId;
+}
+
+/**
  * Generates a sequential, year-aware Voucher Number for Material Issue.
  * Format: MIV-YYYY-XXXXXX
  */
@@ -465,6 +491,37 @@ async function generateVoucherNumber(connection: mysql.PoolConnection | mysql.Po
   }
 
   return `MIV-${year}-${nextNumber.toString().padStart(6, '0')}`;
+}
+
+/**
+ * Generic sequential reference generator: "<PREFIX>-<NNNNNN>" or, when yearAware,
+ * "<PREFIX>-<YYYY>-<NNNNNN>". Reads the highest existing reference for the prefix
+ * from the given table/column (highest id wins, matching batch/voucher creation order).
+ * Used for Update Opening Stock (UOS-000001...). Does NOT replace generateVoucherNumber().
+ * table/column are internal constants, never user input.
+ */
+async function generateSequentialReference(
+  connection: mysql.PoolConnection | mysql.Pool,
+  options: { table: string; column: string; prefix: string; width?: number; yearAware?: boolean }
+): Promise<string> {
+  const { table, column, prefix, width = 6, yearAware = false } = options;
+  const year = new Date().getFullYear();
+  const pattern = yearAware ? `${prefix}-${year}-%` : `${prefix}-%`;
+
+  const [rows]: any = await connection.execute(
+    `SELECT ${column} AS ref FROM ${table} WHERE ${column} LIKE ? ORDER BY id DESC LIMIT 1`,
+    [pattern]
+  );
+
+  let nextNumber = 1;
+  if (rows.length > 0 && rows[0].ref) {
+    const parts = String(rows[0].ref).split('-');
+    const seq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(seq)) nextNumber = seq + 1;
+  }
+
+  const seqStr = nextNumber.toString().padStart(width, '0');
+  return yearAware ? `${prefix}-${year}-${seqStr}` : `${prefix}-${seqStr}`;
 }
 
 function getRequestSession(req: any): Session | null {
@@ -4159,6 +4216,97 @@ api.put('/inventory/:id', authorizeAction('inventory', 'edit'), async (req, res)
     res.status(200).json({ message: 'Item metadata updated successfully' });
   } catch (error: any) {
     await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// Update Opening Stock: initialize inventory before Go-Live / exceptional corrections.
+// Creates a real inventory batch with grn_id = NULL so it is picked up by stock, FIFO
+// and valuation (which do not filter on grn_id) while staying invisible to all
+// GRN/procurement/financial logic (which keys on grn_id). batch_number (UOS-XXXXXX) is
+// a display-only reference. No new column, table, or workflow is introduced.
+api.post('/inventory/opening-stock', authorizeAction('inventory', 'create'), async (req, res) => {
+  const user = (req as any).user as Session;
+  const { inventory_id, quantity, unit_cost, received_date, reason } = req.body;
+
+  const qty = parseFloat(quantity);
+  const cost = parseFloat(unit_cost);
+
+  if (!inventory_id || isNaN(qty) || qty <= 0) {
+    return res.status(400).json({ error: 'Valid inventory_id and quantity (> 0) are required' });
+  }
+  if (isNaN(cost) || cost <= 0) {
+    return res.status(400).json({ error: 'A valid unit cost (> 0) is required for opening stock valuation' });
+  }
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'A reason is required for opening stock entry' });
+  }
+
+  const openingDate = received_date || new Date().toISOString().split('T')[0];
+  const totalValue = qty * cost;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Lock the inventory master row to serialize concurrent stock mutations for this item.
+    const [invRows]: any = await connection.execute(
+      'SELECT id, item_name FROM inventory WHERE id = ? AND is_deleted = FALSE FOR UPDATE',
+      [inventory_id]
+    );
+    if (invRows.length === 0) throw new Error('Inventory item not found');
+    const item = invRows[0];
+
+    // Human-readable, display-only reference. grn_id stays NULL.
+    const referenceNo = await generateSequentialReference(connection, {
+      table: 'inventory_batches',
+      column: 'batch_number',
+      prefix: 'UOS'
+    });
+
+    const batchId = await createInventoryBatch(connection, {
+      inventory_id,
+      grn_id: null,
+      batch_number: referenceNo,
+      quantity: qty,
+      total_value: totalValue,
+      unit_price: cost,
+      received_date: openingDate
+    });
+
+    // Reuse the existing rollup so quantity / total_value / moving-average cost include the new batch.
+    await syncInventoryFromBatches(connection, inventory_id);
+
+    // Reuse the existing audit mechanism (no new logging implementation).
+    await logErpActivity(connection, {
+      actor: user,
+      module: 'inventory',
+      action: 'CREATE',
+      entityType: 'OPENING_STOCK',
+      entityId: batchId,
+      targetUrl: `/inventory?id=${inventory_id}`,
+      details: {
+        recordNumber: referenceNo,
+        amount: totalValue,
+        remarks: `Opening stock: ${qty} x ${item.item_name} @ ${cost}. Reason: ${String(reason).trim()}`
+      }
+    });
+
+    await connection.commit();
+    res.status(201).json({
+      id: batchId,
+      batch_number: referenceNo,
+      inventory_id,
+      quantity: qty,
+      unit_cost: cost,
+      total_value: totalValue,
+      message: 'Opening stock recorded successfully'
+    });
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('[API] opening-stock error:', error);
     res.status(500).json({ error: error.message });
   } finally {
     connection.release();
@@ -8191,11 +8339,15 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
             [item.inventory_id, item.item_name, qty, itemTotal, '[]', grnId, projectId || null, projectName, 'Direct to Site', created_by, grn_date, `Direct Project Purchase via GRN: ${grn_number}`]
           );
         } else {
-          await connection.execute(
-            `INSERT INTO inventory_batches (inventory_id, grn_id, batch_number, quantity_received, quantity_remaining, total_value_received, total_value_remaining, unit_price, received_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [item.inventory_id, grnId, grn_number, qty, qty, itemTotal, itemTotal, highPrecisionRate, grn_date]
-          );
+          await createInventoryBatch(connection, {
+            inventory_id: item.inventory_id,
+            grn_id: grnId,
+            batch_number: grn_number,
+            quantity: qty,
+            total_value: itemTotal,
+            unit_price: highPrecisionRate,
+            received_date: grn_date
+          });
           const [batches]: any = await connection.execute(
             'SELECT * FROM inventory_batches WHERE inventory_id = ? AND quantity_remaining > 0 AND is_void = FALSE ORDER BY received_date ASC, id ASC FOR UPDATE',
             [item.inventory_id]
@@ -8225,11 +8377,15 @@ api.post('/grns', authorizeAction('grn', 'create'), async (req, res) => {
         }
         await syncInventoryFromBatches(connection, item.inventory_id);
       } else {
-        await connection.execute(
-          `INSERT INTO inventory_batches (inventory_id, grn_id, batch_number, quantity_received, quantity_remaining, total_value_received, total_value_remaining, unit_price, received_date)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [item.inventory_id, grnId, grn_number, qty, qty, itemTotal, itemTotal, highPrecisionRate, grn_date]
-        );
+        await createInventoryBatch(connection, {
+          inventory_id: item.inventory_id,
+          grn_id: grnId,
+          batch_number: grn_number,
+          quantity: qty,
+          total_value: itemTotal,
+          unit_price: highPrecisionRate,
+          received_date: grn_date
+        });
         await syncInventoryFromBatches(connection, item.inventory_id);
       }
     }
@@ -9680,7 +9836,7 @@ api.get('/reports/inventory-ledger', authorizeAction('reports', 'view'), async (
       SELECT 
         received_date as date, 
         'INWARD' as type, 
-        CASE WHEN batch_number = 'MANUAL_ADD' THEN 'ADJUSTMENT' ELSE 'GRN' END as ref_type,
+        CASE WHEN grn_id IS NULL THEN 'OPENING' ELSE 'GRN' END as ref_type,
         batch_number as ref_no,
         quantity_received as qty_in,
         0 as qty_out,
