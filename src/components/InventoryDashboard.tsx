@@ -5,6 +5,8 @@ import { canEdit, hasPermission } from '../rbac';
 import { createAuthHeaders } from '../services/api';
 import { FilterBar } from './common/FilterBar';
 import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
+import { SearchableSelect } from './common/SearchableSelect';
+import { toMaterialOptions } from '../lib/search/materialOption';
 
 interface InventoryDashboardProps {
   role: string;
@@ -1123,17 +1125,12 @@ export function InventoryDashboard({ role }: InventoryDashboardProps) {
                           return (
                             <tr key={index} className="hover:bg-gray-50/50">
                               <td className="px-4 py-3">
-                                <select
-                                  required
+                                <SearchableSelect
+                                  options={toMaterialOptions(inventory)}
                                   value={item.inventory_id}
-                                  onChange={e => updateVoucherItem(index, 'inventory_id', e.target.value)}
-                                  className="w-full bg-transparent border-none focus:ring-0 font-bold text-gray-900"
-                                >
-                                  <option value="">Select Material...</option>
-                                  {inventory.map(i => (
-                                    <option key={i.id} value={i.id}>{i.item_name} ({i.unit})</option>
-                                  ))}
-                                </select>
+                                  onChange={(val) => updateVoucherItem(index, 'inventory_id', val.toString())}
+                                  placeholder="Select Material..."
+                                />
                               </td>
                               <td className="px-4 py-3 text-gray-500 font-medium">
                                 {invItem ? `${invItem.quantity} ${invItem.unit}` : '-'}
