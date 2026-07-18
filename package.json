@@ -7,6 +7,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "server": "tsx server.ts",
     "build": "vite build",
+    "test": "tsx --test src/lib/search/searchUtils.test.ts src/lib/search/comboboxNavigation.test.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

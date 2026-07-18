@@ -3,6 +3,8 @@ import { X, Plus, Trash2, ShoppingCart, AlertCircle, Save, Send } from 'lucide-r
 import { API_CONFIG } from '../../config';
 import { getAuthToken } from '../../services/api';
 import { QuickRegisterMaterialModal } from '../common/QuickRegisterMaterialModal';
+import { SearchableSelect } from '../common/SearchableSelect';
+import { toMaterialOptions } from '../../lib/search/materialOption';
 
 interface PurchaseRequestFormProps {
   onClose: () => void;
@@ -273,15 +275,15 @@ export function PurchaseRequestForm({ onClose, initialData }: PurchaseRequestFor
                         <label className="text-[10px] font-black text-slate-400 uppercase">Material Item</label>
                       </div>
                       <div className="flex gap-2">
-                        <select 
-                          disabled={isViewOnly}
-                          value={item.inventory_id}
-                          onChange={(e) => updateItem(index, 'inventory_id', e.target.value)}
-                          className="flex-1 px-3 py-2 bg-white border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-blue-100 transition-all disabled:opacity-60"
-                        >
-                          <option value="">Select Item...</option>
-                          {inventory.map(i => <option key={i.id} value={i.id}>{i.item_name} ({i.unit})</option>)}
-                        </select>
+                        <div className="flex-1">
+                          <SearchableSelect
+                            options={toMaterialOptions(inventory)}
+                            value={item.inventory_id}
+                            onChange={(val) => updateItem(index, 'inventory_id', val)}
+                            placeholder="Select Item..."
+                            disabled={isViewOnly}
+                          />
+                        </div>
                         <button
                           type="button"
                           disabled={isViewOnly}

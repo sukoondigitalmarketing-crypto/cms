@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Search, X, Printer, Package, User, Building2, Calendar, FileText, Eye, Pencil, XCircle, FileCheck, ShieldAlert, Lock, Info } from 'lucide-react';
 import { API_CONFIG, ROLE_PERMISSIONS } from '../config';
 import { createAuthHeaders } from '../services/api';
@@ -6,6 +6,8 @@ import { usePermissions } from '../hooks/usePermissions';
 import { FilterBar } from './common/FilterBar';
 import { QuickRegisterMaterialModal } from './common/QuickRegisterMaterialModal';
 import { useAuth } from './AuthProvider';
+import { toMaterialOptions } from '../lib/search/materialOption';
+import { SearchableSelect } from './common/SearchableSelect';
 
 interface GrnDashboardProps {
   role: string;
@@ -288,70 +290,6 @@ function GrnViewModal({ grn, onClose, onDownloadPdf }: GrnViewModalProps) {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function SearchableSelect({ options, value, onChange, placeholder }: any) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        setSearch('');
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const selectedOption = options.find((o: any) => o.value == value);
-  const displayValue = isOpen ? search : (selectedOption ? selectedOption.label : '');
-
-  const filteredOptions = options.filter((o: any) => 
-    o.label.toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <div className="relative w-full" ref={wrapperRef}>
-      <input
-        type="text"
-        className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm bg-white cursor-text"
-        placeholder={placeholder}
-        value={displayValue}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          setIsOpen(true);
-        }}
-        onClick={() => setIsOpen(true)}
-      />
-      <div className="absolute right-3 top-2.5 pointer-events-none text-gray-400">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-      </div>
-      {isOpen && (
-        <div className="absolute z-50 w-full mt-1 max-h-60 overflow-auto bg-white border border-gray-300 rounded-lg shadow-xl">
-          {filteredOptions.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-gray-500">No results found</div>
-          ) : (
-            filteredOptions.map((option: any) => (
-              <div
-                key={option.value}
-                className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 ${value == option.value ? 'bg-blue-50 font-bold' : ''}`}
-                onClick={() => {
-                  onChange(option.value);
-                  setIsOpen(false);
-                  setSearch('');
-                }}
-              >
-                {option.label}
-              </div>
-            ))
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -1241,7 +1179,7 @@ export function GrnDashboard({ role, userName }: GrnDashboardProps) {
                         <div className="flex gap-2">
                           <div className="flex-1">
                             <SearchableSelect
-                              options={inventory.map(inv => ({ value: inv.id, label: `${inv.item_name} (${inv.unit})` }))}
+                              options={toMaterialOptions(inventory)}
                               value={item.inventory_id}
                               onChange={(val: any) => updateItem(index, 'inventory_id', val)}
                               placeholder="Choose item..."
